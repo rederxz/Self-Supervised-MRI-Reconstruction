@@ -55,6 +55,7 @@ parser.add_argument('--train-sample-rate', '-trsr', type=float, default=0.02, he
 parser.add_argument('--val-sample-rate', '-vsr', type=float, default=0.01, help='sampling rate of validation data')
 parser.add_argument('--test-sample-rate', '-tesr', type=float, default=0.01, help='sampling rate of test data')
 # save path
+parser.add_argument('--output-path', type=str, default='./run/', help='output path')
 parser.add_argument('--model-save-path', type=str, default='./run/checkpoints/', help='save path of trained model')
 parser.add_argument('--loss-curve-path', type=str, default='./run/loss_curve/', help='save path of loss curve in tensorboard')
 # others
@@ -310,6 +311,7 @@ def solvers(rank, ngpus_per_node, args):
 def main():
     args = parser.parse_args()
     args.world_size = args.nodes * args.gpus
+    os.makedirs(args.output_path, exist_ok=True)
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
