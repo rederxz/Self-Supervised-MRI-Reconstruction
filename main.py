@@ -54,10 +54,9 @@ parser.add_argument('--s-mask-down-path', type=str, default='./mask/selecting_ma
 parser.add_argument('--train-sample-rate', '-trsr', type=float, default=0.02, help='sampling rate of training data')
 parser.add_argument('--val-sample-rate', '-vsr', type=float, default=0.01, help='sampling rate of validation data')
 parser.add_argument('--test-sample-rate', '-tesr', type=float, default=0.01, help='sampling rate of test data')
-parser.add_argument('--prefetch', type=bool, default=True, help='prefetch data')
 # save path
-parser.add_argument('--model-save-path', type=str, default='./checkpoints/', help='save path of trained model')
-parser.add_argument('--loss-curve-path', type=str, default='./runs/loss_curve/', help='save path of loss curve in tensorboard')
+parser.add_argument('--model-save-path', type=str, default='./run/checkpoints/', help='save path of trained model')
+parser.add_argument('--loss-curve-path', type=str, default='./run/loss_curve/', help='save path of loss curve in tensorboard')
 # others
 parser.add_argument('--mode', '-m', type=str, default='train', help='whether training or test model, value should be set to train or test')
 parser.add_argument('--pretrained', '-pt', type=bool, default=False, help='whether load checkpoint')
@@ -69,7 +68,7 @@ def create_logger():
     file_formatter = logging.Formatter('%(asctime)s %(filename)s [line:%(lineno)d] %(levelname)s:\t%(message)s')
     stream_formatter = logging.Formatter('%(levelname)s:\t%(message)s')
 
-    file_handler = logging.FileHandler(filename='logger.txt', mode='a+', encoding='utf-8')
+    file_handler = logging.FileHandler(filename='./run/log.txt', mode='a+', encoding='utf-8')
     file_handler.setLevel(level=logging.DEBUG)
     file_handler.setFormatter(file_formatter)
 
