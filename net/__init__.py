@@ -1,1 +1,1 @@
-from net.network import ISTANetPlus, ParallelNetwork
+from net.network import ISTANetPlus, ParallelNetwork, ShareWeightParallelNetwork

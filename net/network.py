@@ -35,3 +35,18 @@ class ParallelNetwork(nn.Module):
         output_up, loss_layers_up = self.up_network(under_img_up, mask_up)
         output_down, loss_layers_down = self.down_network(under_img_down, mask_down)
         return output_up, loss_layers_up, output_down, loss_layers_down
+
+
+class ShareWeightParallelNetwork(nn.Module):
+    def __init__(self, num_layers, rank):
+        super(ShareWeightParallelNetwork, self).__init__()
+        self.num_layers = num_layers
+        self.rank = rank
+
+        self.up_network = ISTANetPlus(self.num_layers, self.rank)
+        self.down_network = self.up_network
+
+    def forward(self, under_img_up, mask_up, under_img_down, mask_down):
+        output_up, loss_layers_up = self.up_network(under_img_up, mask_up)
+        output_down, loss_layers_down = self.down_network(under_img_down, mask_down)
+        return output_up, loss_layers_up, output_down, loss_layers_down
