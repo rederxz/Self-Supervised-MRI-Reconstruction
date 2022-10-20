@@ -17,7 +17,8 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 # Custom
-from net import ParallelNetwork as Network
+# from net import ParallelNetwork as Network
+from net import ParallelDuDoRNetwork as Network
 from IXI_dataset import IXIData as Dataset
 from mri_tools import rA, rAtA, rfft2
 from utils import psnr_slice, ssim_slice
@@ -132,41 +133,26 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
     for iter_num, data_batch in enumerate(t):
         label = data_batch[0].to(rank, non_blocking=True)
         mask_under = data_batch[1].to(rank, non_blocking=True)
-        mask_net_up = data_batch[2].to(rank, non_blocking=True)
-        mask_net_down = data_batch[3].to(rank, non_blocking=True)
-        # fname = data_batch[4]
-        # slice_id = data_batch[5]
+        mask_k = data_batch[2].to(rank, non_blocking=True)
+        mask_i = data_batch[3].to(rank, non_blocking=True)
 
         under_img = rAtA(label, mask_under)
         under_kspace = rA(label, mask_under)
-        net_img_up = rAtA(label, mask_net_up)
-        net_img_down = rAtA(label, mask_net_down)
+        k_input = rA(label, mask_k)
+        i_input = rAtA(label, mask_i)
         if mode == 'test':
-            net_img_up = net_img_down = under_img
-            mask_net_up = mask_net_down = mask_under
-        output_up, loss_layers_up, output_down, loss_layers_down = model(net_img_up.permute(0, 3, 1, 2).contiguous(), mask_net_up, net_img_down.permute(0, 3, 1, 2).contiguous(), mask_net_down)
-        output_up, output_down = output_up.permute(0, 2, 3, 1).contiguous(), output_down.permute(0, 2, 3, 1).contiguous()
-        output_up_kspace = rfft2(output_up)
-        output_down_kspace = rfft2(output_down)
-        diff_otherf = (output_up_kspace - output_down_kspace) * (1 - mask_under)
-        recon_loss_up = criterion(output_up_kspace * mask_under, under_kspace)
-        recon_loss_down = criterion(output_down_kspace * mask_under, under_kspace)
-        diff_loss = criterion(diff_otherf, torch.zeros_like(diff_otherf))
+            k_input = under_kspace
+            i_input = under_img
+            mask_k = mask_i = mask_under
+        # TODO : 输入：欠采样图像，blabla；输出：输出的图像，以及损失函数
+        k_output, i_output, loss = model.forward(mask_under, under_kspace, under_img, mask_k, k_input, mask_i, i_input)
 
-        constr_loss_up = criterion(loss_layers_up[0], torch.zeros_like(loss_layers_up[0]))
-        constr_loss_down = criterion(loss_layers_down[0], torch.zeros_like(loss_layers_down[0]))
-        for i in range(args.num_layers - 1):
-            constr_loss_up += criterion(loss_layers_up[i + 1], torch.zeros_like((loss_layers_up[i + 1])))
-            constr_loss_down += criterion(loss_layers_down[i + 1], torch.zeros_like((loss_layers_down[i + 1])))
-        batch_loss = recon_loss_up + recon_loss_down + 0.01 * diff_loss + 0.01 * constr_loss_up + 0.01 * constr_loss_down
         if mode == 'train':
-            optimizer.zero_grad()
-            batch_loss.backward()
-            optimizer.step()
+            model.backward()
         else:
-            psnr += psnr_slice(label, output_up)
-            ssim += ssim_slice(label, output_up)
-        loss += batch_loss.item()
+            psnr += psnr_slice(label, i_output)
+            ssim += ssim_slice(label, i_output)
+        loss += loss.item()
     loss /= len(dataloader)
     log.append(loss)
     if mode == 'train':
@@ -190,7 +176,12 @@ def solvers(rank, ngpus_per_node, args):
     start_epoch = 0
     best_ssim = 0.0
     # model
-    model = Network(num_layers=args.num_layers, rank=rank)
+    model = Network(args)
+    model.setgpu([rank])
+    # 统计模型参数
+    if rank == 0:
+        num_param = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        logger.info('Number of parameters: {} \n'.format(num_param))
     # whether load checkpoint
     if args.pretrained or args.mode == 'test':
         model_path = os.path.join(args.model_save_path, 'best_checkpoint.pth.tar')
@@ -207,9 +198,7 @@ def solvers(rank, ngpus_per_node, args):
             logger.info('Current best ssim in train phase is {}.'.format(best_ssim))
             logger.info('The model is loaded.')
     elif args.use_init_weights:
-        init_weights(model, init_type=args.init_type, gain=args.gain)
-        if rank == 0:
-            logger.info('Initialize model with {}.'.format(args.init_type))
+        model.initialize()
     model = model.to(rank)
     model = DDP(model, device_ids=[rank])
 
