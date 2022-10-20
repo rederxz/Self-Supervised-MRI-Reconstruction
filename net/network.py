@@ -66,6 +66,19 @@ class ParallelNetwork(nn.Module):
         return output_up, loss_layers_up, output_down, loss_layers_down
 
 
+class ParallelKINetwork(nn.Module):
+    def __init__(self, opts):
+        super(ParallelKINetwork, self).__init__()
+
+        self.k_network = du_recurrent_model.RecurrentModel(opts)
+        self.i_network = du_recurrent_model.RecurrentModel(opts)
+
+    def forward(self, mask_1, mask_1_k, mask_1_i, mask_2, mask_2_k, mask_3, mask_3_i):
+        k_output, loss_k_branch = self.k_network.forward_k(mask_2_k, mask_1_k, mask_1)
+        i_output, loss_i_branch = self.i_network.forward_i(mask_3_i, mask_1_k, mask_1)
+        return k_output, loss_k_branch, i_output, loss_i_branch
+
+
 class ShareWeightParallelNetwork(nn.Module):
     def __init__(self, num_layers, rank):
         super(ShareWeightParallelNetwork, self).__init__()
