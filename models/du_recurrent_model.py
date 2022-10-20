@@ -4,7 +4,7 @@ from collections import OrderedDict
 import torch.nn as nn
 import torch.utils.data
 from tqdm import tqdm
-from skimage.measure import compare_ssim as ssim
+# from skimage.measure import compare_ssim as ssim
 
 from networks import get_generator
 from networks.networks import gaussian_weights_init
@@ -95,25 +95,25 @@ class RecurrentModel(nn.Module):
 
         loss_kspc = 0
         for j in range(1, self.n_recurrent + 1):
-            loss_kspc = loss_kspc + self.criterion(self.net['r%d_kspc_pred' % j].permute(0, 2, 3, 1) * k_target_mask, k_target)
+            loss_kspc = loss_kspc + self.criterion(net['r%d_kspc_pred' % j] * k_target_mask, k_target)
 
         return K, loss_kspc
 
     def forward_i(self, i_input, i_target, i_target_mask):
-        I = self.tag_image_sub
+        I = i_input
         I.requires_grad_(True)
 
         net_i = {}
         for i in range(1, self.n_recurrent + 1):
 
-            net_i['r%d_img_pred' % i] = self.net_G_I(I)  # output recon image
+            net_i['r%d_img_pred' % i] = self.net_G(I)  # output recon image
             I = net_i['r%d_img_pred' % i]
 
         loss_img_dc = 0
         for j in range(1, self.n_recurrent + 1):
             loss_img_dc = loss_img_dc + self.criterion(
-                fft2(self.net['r%d_img_dc_pred' % j].permute(0, 2, 3, 1)) * i_target_mask,
-                fft2(i_target.permute(0, 2, 3, 1)))
+                fft2(net_i['r%d_img_pred' % j].permute(0, 2, 3, 1)).permute(0, 3, 1, 2) * i_target_mask,
+                fft2(i_target.permute(0, 2, 3, 1)).permute(0, 3, 1, 2))
 
         return I, loss_img_dc
 

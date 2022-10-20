@@ -99,7 +99,8 @@ class ParallelDuDoRNetwork(nn.Module):
         k_output, k_loss = self.k_network.forward_k(mask_2_k, mask_1_k, mask_1)
         i_output, i_loss = self.i_network.forward_i(mask_3_i, mask_1_i, mask_1)
 
-        diff_loss = (k_output - rfft2(i_output)) * (1 - mask_1)
+        diff = (k_output - fft2(i_output.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)) * (1 - mask_1)
+        diff_loss = self.criterion(diff, torch.zeros_like(diff))
 
         self.loss = k_loss + i_loss + 0.01 * diff_loss
 

@@ -27,6 +27,64 @@ os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 # os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
 
 parser = argparse.ArgumentParser()
+
+# model name
+parser.add_argument('--experiment_name', type=str, default='train_DRDN_1Do_1pT1', help='give a experiment name before training')
+parser.add_argument('--model_type', type=str, default='model_recurrent_dual', help='model type')   # model_recurrent_dual / model_recurrent_single / model_cascade / model_cnn
+parser.add_argument('--resume', type=str, default=None, help='Filename of the checkpoint to resume')
+
+# dataset
+parser.add_argument('--data_root', type=str, default='../Data/PROC/', help='data root folder')
+parser.add_argument('--protocol_ref', type=str, default='T1', help='prior modality dataset name')   # T1 / T2 / FLAIR
+parser.add_argument('--protocol_tag', type=str, default='T2', help='recon modality dataset name')   # T1 / T2 / FLAIR
+parser.add_argument('--dataset', type=str, default='Cartesian', help='dataset name')   # Cartesian / Radial / Spiral
+
+# model architectures
+parser.add_argument('--net_G', type=str, default='DRDN', help='generator network')   # DRDN / SCNN
+parser.add_argument('--n_recurrent', type=int, default=5, help='Number of reccurent block in model')
+parser.add_argument('--use_prior', default=False, action='store_true', help='use prior')   # True / False
+
+# loss options
+parser.add_argument('--wr_L1', type=float, default=1, help='weight for reconstruction L1 loss')
+
+# training options
+parser.add_argument('--n_epochs', type=int, default=1000, help='number of epoch')
+parser.add_argument('--batch_size', type=int, default=1, help='training batch size')
+
+# evaluation options
+parser.add_argument('--eval_epochs', type=int, default=4, help='evaluation epochs')
+parser.add_argument('--save_epochs', type=int, default=4, help='save evaluation for every number of epochs')
+
+parser.add_argument('--center_fractions', type=float, default=1.0/8.0, help='Cartesian: cernter fraction')
+parser.add_argument('--accelerations', type=float, default=5.0, help='Cartesian: acceleration rate')
+
+parser.add_argument('--n_lines', type=float, default=np.round(256 * 0.16), help='Radial: number of radial lines')
+
+parser.add_argument('--n_interleaves', type=float, default=11, help='Spiral: number of interleaves')
+
+# optimizer
+# parser.add_argument('--lr', type=float, default=1e-4, help='learning rate')
+
+parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for ADAM')
+parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for ADAM')
+parser.add_argument('--weight_decay', type=float, default=0, help='weight decay')
+
+# learning rate policy
+parser.add_argument('--lr_policy', type=str, default='step', help='learning rate decay policy')
+parser.add_argument('--step_size', type=int, default=1000, help='step size for step scheduler')
+parser.add_argument('--gamma', type=float, default=0.5, help='decay ratio for step scheduler')
+
+# logger options
+parser.add_argument('--snapshot_epochs', type=int, default=10, help='save model for every number of epochs')
+parser.add_argument('--log_freq', type=int, default=100, help='save model for every number of epochs')
+parser.add_argument('--output_path', default='./', type=str, help='Output path.')
+
+# other
+parser.add_argument('--num_workers', type=int, default=8, help='number of threads to load data')
+parser.add_argument('--gpu_ids', type=int, nargs='+', default=[0], help='list of gpu ids')
+
+
+
 parser.add_argument('--exp-name', type=str, default='self-supervised MRI reconstruction', help='name of experiment')
 # parameters related to distributed training
 parser.add_argument('--init-method', default='tcp://localhost:1836', help='initialization method')
@@ -136,22 +194,41 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
         mask_k = data_batch[2].to(rank, non_blocking=True)
         mask_i = data_batch[3].to(rank, non_blocking=True)
 
+        
         under_img = rAtA(label, mask_under)
+        under_img = torch.cat([under_img, under_img], dim=-1)
         under_kspace = rA(label, mask_under)
         k_input = rA(label, mask_k)
         i_input = rAtA(label, mask_i)
+        i_input = torch.cat([i_input, i_input], dim=-1)
         if mode == 'test':
             k_input = under_kspace
             i_input = under_img
             mask_k = mask_i = mask_under
+        
+        label = torch.cat([label, label], dim=-1)
+        label = label.movedim(-1, 1)
+
+        mask_under = mask_under.movedim(-1, 1)
+        under_kspace = under_kspace.movedim(-1, 1)
+        under_img = under_img.movedim(-1, 1)
+        mask_k = mask_k.movedim(-1, 1)
+        k_input = k_input.movedim(-1, 1)
+        mask_i = mask_i.movedim(-1, 1)
+        i_input = i_input.movedim(-1, 1)
+
         # TODO : 输入：欠采样图像，blabla；输出：输出的图像，以及损失函数
         k_output, i_output, loss = model.forward(mask_under, under_kspace, under_img, mask_k, k_input, mask_i, i_input)
 
         if mode == 'train':
-            model.backward()
+            model.module.backward()
         else:
-            psnr += psnr_slice(label, i_output)
-            ssim += ssim_slice(label, i_output)
+            a = label.permute(0, 2, 3, 1)
+            a = abs(a[..., 0] + a[..., 1] * 1j)
+            b = i_output.permute(0, 2, 3, 1)
+            b = abs(b[..., 0] + b[..., 1] * 1j)
+            psnr += psnr_slice(a, b)
+            ssim += ssim_slice(a, b)
         loss += loss.item()
     loss /= len(dataloader)
     log.append(loss)
@@ -198,7 +275,8 @@ def solvers(rank, ngpus_per_node, args):
             logger.info('Current best ssim in train phase is {}.'.format(best_ssim))
             logger.info('The model is loaded.')
     elif args.use_init_weights:
-        model.initialize()
+        # model.initialize()
+        pass
     model = model.to(rank)
     model = DDP(model, device_ids=[rank])
 
