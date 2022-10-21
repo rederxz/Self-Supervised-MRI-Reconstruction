@@ -15,11 +15,14 @@ import pdb
 
 
 class RecurrentModel(nn.Module):
+    """
+    single domain recurrent model (i-domain or k-domain)
+    """
     def __init__(self, opts):
         super(RecurrentModel, self).__init__()
 
         # self.loss_names = []
-        # self.networks = []
+        self.networks = []
         # self.optimizers = []
 
         self.n_recurrent = opts.n_recurrent
@@ -32,7 +35,7 @@ class RecurrentModel(nn.Module):
         # self.is_train = True if hasattr(opts, 'lr') else False
 
         self.net_G = get_generator(opts.net_G, opts)
-        # self.networks.append(self.net_G)
+        self.networks.append(self.net_G)
         #
         # if self.is_train:
         #     self.loss_names += ['loss_G_L1']
@@ -63,26 +66,6 @@ class RecurrentModel(nn.Module):
 
     def initialize(self):
         [net.apply(gaussian_weights_init) for net in self.networks]
-
-    def set_scheduler(self, opts, epoch=-1):
-        self.schedulers = [get_scheduler(optimizer, opts, last_epoch=epoch) for optimizer in self.optimizers]
-
-    # def set_input(self, data):
-    #     self.tag_kspace_full = data['tag_kspace_full'].to(self.device)
-    #     self.tag_kspace_sub = data['tag_kspace_sub'].to(self.device)
-    #     self.tag_image_full = data['tag_image_full'].to(self.device)
-    #     self.tag_image_sub = data['tag_image_sub'].to(self.device)
-    #     self.tag_kspace_mask2d = data['tag_kspace_mask2d'].to(self.device)
-
-    def get_current_losses(self):
-        errors_ret = OrderedDict()
-        for name in self.loss_names:
-            if isinstance(name, str):
-                errors_ret[name] = float(getattr(self, name))
-        return errors_ret
-
-    def set_epoch(self, epoch):
-        self.curr_epoch = epoch
 
     def forward_k(self, k_input, k_target, k_target_mask):
         K = k_input
@@ -141,16 +124,29 @@ class RecurrentModel(nn.Module):
         self.net = net
         self.recon = I
 
-    def update_G_k(self):
+    def update_G(self):
         loss_G_L1 = 0
         self.optimizer_G.zero_grad()
+
+        # TODO: 这里是每次迭代的输出都参与计算loss，而不只有最终的输出，即deep supervision
+
+        # Image domain
+        loss_img_dc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_img_dc = loss_img_dc + self.criterion(self.net['r%d_img_dc_pred' % j], self.tag_image_full)
 
         # Kspace domain
         loss_kspc = 0
         for j in range(1, self.n_recurrent + 1):
             loss_kspc = loss_kspc + self.criterion(self.net['r%d_kspc_pred' % j].permute(0, 2, 3, 1), self.tag_kspace_full)
 
-        loss_kspc.backward()
+        loss_G_L1 = loss_img_dc + loss_kspc
+        self.loss_G_L1 = loss_G_L1.item()
+        self.loss_img = loss_img_dc.item()
+        self.loss_kspc = loss_kspc.item()
+
+        total_loss = loss_G_L1
+        total_loss.backward()
         self.optimizer_G.step()
 
     def update_G(self):
@@ -178,88 +174,289 @@ class RecurrentModel(nn.Module):
         total_loss.backward()
         self.optimizer_G.step()
 
-    def optimize(self):
-        self.loss_G_L1 = 0
 
-        self.forward()
-        self.update_G()
+class RecurrentModelDC(nn.Module):
+    """
+    single domain recurrent model (i-domain or k-domain) with DC
+    """
+    def __init__(self, opts):
+        super(RecurrentModelDC, self).__init__()
 
-    @property
-    def loss_summary(self):
-        message = ''
-        if self.opts.wr_L1 > 0:
-            message += 'G_L1: {:.4e} Img_L1: {:.4e} Kspc_L1: {:.4e}'.format(self.loss_G_L1, self.loss_img, self.loss_kspc)
+        self.networks = []
 
-        return message
+        self.n_recurrent = opts.n_recurrent
 
-    def update_learning_rate(self):
-        for scheduler in self.schedulers:
-            scheduler.step()
-        lr = self.optimizers[0].param_groups[0]['lr']
-        print('learning rate = {:7f}'.format(lr))
+        self.net_G = get_generator(opts.net_G, opts)
+        self.networks.append(self.net_G)
 
-    def save(self, filename, epoch, total_iter):
+        self.criterion = nn.L1Loss()
 
-        state = {}
-        if self.opts.wr_L1 > 0:
-            state['net_G_I'] = self.net_G_I.module.state_dict()
-            state['net_G_K'] = self.net_G_K.module.state_dict()
-            state['opt_G'] = self.optimizer_G.state_dict()
+        # data consistency layers in image space & k-space
+        dcs_I = []
+        for i in range(self.n_recurrent):
+            dcs_I.append(DataConsistencyInKspace_I(noise_lvl=None))
+        self.dcs_I = dcs_I
 
-        state['epoch'] = epoch
-        state['total_iter'] = total_iter
+        dcs_K = []
+        for i in range(self.n_recurrent):
+            dcs_K.append(DataConsistencyInKspace_K(noise_lvl=None))
+        self.dcs_K = dcs_K
 
-        torch.save(state, filename)
-        print('Saved {}'.format(filename))
+    def setgpu(self, gpu_ids):
+        self.device = torch.device('cuda:{}'.format(gpu_ids[0]))
 
-    def resume(self, checkpoint_file, train=True):
-        checkpoint = torch.load(checkpoint_file)
+    def initialize(self):
+        [net.apply(gaussian_weights_init) for net in self.networks]
 
-        if self.opts.wr_L1 > 0:
-            self.net_G_I.module.load_state_dict(checkpoint['net_G_I'])
-            self.net_G_K.module.load_state_dict(checkpoint['net_G_K'])
-            if train:
-                self.optimizer_G.load_state_dict(checkpoint['opt_G'])
+    def forward_k(self, k_input, mask_input, k_target, k_target_mask):
+        K = k_input
+        K.requires_grad_(True)
 
-        print('Loaded {}'.format(checkpoint_file))
+        net = {}
+        for i in range(1, self.n_recurrent + 1):
 
-        return checkpoint['epoch'], checkpoint['total_iter']
+            net['r%d_kspc_pred' % i] = self.net_G(K)  # output recon kspace
+            _, K = self.dcs_K[i - 1](net['r%d_kspc_pred' % i], k_input, mask_input)  # output data consistency images
 
-    def evaluate(self, loader):
-        val_bar = tqdm(loader)
-        avg_psnr = AverageMeter()
-        avg_ssim = AverageMeter()
+        loss_kspc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_kspc = loss_kspc + self.criterion(net['r%d_kspc_pred' % j] * k_target_mask, k_target)
 
-        recon_images = []
-        gt_images = []
-        input_images = []
+        return K, loss_kspc
 
-        for data in val_bar:
-            self.set_input(data)
-            self.forward()
+    def forward_i(self, i_input, mask_input, i_target, i_target_mask):
+        k_input = fft2_tensor(i_input)
+        I = i_input
+        I.requires_grad_(True)
 
-            if self.opts.wr_L1 > 0:
-                psnr_recon = psnr(complex_abs_eval(self.recon),
-                                  complex_abs_eval(self.tag_image_full))
-                avg_psnr.update(psnr_recon)
+        net_i = {}
+        for i in range(1, self.n_recurrent + 1):
 
-                ssim_recon = ssim(complex_abs_eval(self.recon)[0,0,:,:].cpu().numpy(),
-                                  complex_abs_eval(self.tag_image_full)[0,0,:,:].cpu().numpy())
-                avg_ssim.update(ssim_recon)
+            net_i['r%d_img_pred' % i] = self.net_G(I)  # output recon image
+            net_i['r%d_img_dc_pred' % i], _ = self.dcs_I[i - 1](net_i['r%d_img_pred' % i], k_input, mask_input)
+            I = net_i['r%d_img_dc_pred' % i]
 
-                recon_images.append(self.recon[0].cpu())
-                gt_images.append(self.tag_image_full[0].cpu())
-                input_images.append(self.tag_image_sub[0].cpu())
+        loss_img_dc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_img_dc = loss_img_dc + self.criterion(
+                fft2_tensor(net_i['r%d_img_dc_pred' % j]) * i_target_mask,
+                i_target)
 
-            message = 'PSNR: {:4f} '.format(avg_psnr.avg)
-            message += 'SSIM: {:4f} '.format(avg_ssim.avg)
-            val_bar.set_description(desc=message)
+        return I, loss_img_dc
 
-        self.psnr_recon = avg_psnr.avg
-        self.ssim_recon = avg_ssim.avg
 
-        self.results = {}
-        if self.opts.wr_L1 > 0:
-            self.results['recon'] = torch.stack(recon_images).squeeze().numpy()
-            self.results['gt'] = torch.stack(gt_images).squeeze().numpy()
-            self.results['input'] = torch.stack(input_images).squeeze().numpy()
+# noinspection PyCallingNonCallable
+class KRNet(nn.Module):
+    """
+    single domain recurrent model (i-domain or k-domain) with DC
+    """
+    def __init__(self, opts):
+        super(KRNet, self).__init__()
+
+        self.networks = []
+
+        self.n_recurrent = opts.n_recurrent
+
+        self.net_G = get_generator(opts.net_G, opts)
+        self.networks.append(self.net_G)
+
+        self.criterion = nn.L1Loss()
+
+        # data consistency layers in image space & k-space
+        dcs_K = []
+        for i in range(self.n_recurrent):
+            dcs_K.append(DataConsistencyInKspace_K(noise_lvl=None))
+        self.dcs_K = dcs_K
+
+    def setgpu(self, gpu_ids):
+        self.device = torch.device('cuda:{}'.format(gpu_ids[0]))
+
+    def initialize(self):
+        [net.apply(gaussian_weights_init) for net in self.networks]
+
+    def forward_k(self, img_subset, k_subset, mask_subset, k_omega, mask_omega):
+        K = k_subset
+        K.requires_grad_(True)
+
+        net = {}
+        for i in range(1, self.n_recurrent + 1):
+
+            net['r%d_kspc_pred' % i] = self.net_G(K)  # output recon kspace
+            _, K = self.dcs_K[i - 1](net['r%d_kspc_pred' % i], k_subset, mask_subset)  # output data consistency images
+
+        loss_kspc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_kspc = loss_kspc + self.criterion(net['r%d_kspc_pred' % j] * mask_omega, k_omega)
+
+        return K, loss_kspc
+
+    def forward(self, *args, **kwargs):
+        return self.forward_k(self, *args, **kwargs)
+
+
+# noinspection PyCallingNonCallable
+class IRNet(nn.Module):
+    """
+    single domain recurrent model (i-domain or k-domain) with DC
+    """
+    def __init__(self, opts):
+        super(IRNet, self).__init__()
+
+        self.networks = []
+
+        self.n_recurrent = opts.n_recurrent
+
+        self.net_G = get_generator(opts.net_G, opts)
+        self.networks.append(self.net_G)
+
+        self.criterion = nn.L1Loss()
+
+        # data consistency layers in image space & k-space
+        dcs_I = []
+        for i in range(self.n_recurrent):
+            dcs_I.append(DataConsistencyInKspace_I(noise_lvl=None))
+        self.dcs_I = dcs_I
+
+    def setgpu(self, gpu_ids):
+        self.device = torch.device('cuda:{}'.format(gpu_ids[0]))
+
+    def initialize(self):
+        [net.apply(gaussian_weights_init) for net in self.networks]
+
+    def forward_i(self, img_subset, k_subset, mask_subset, k_omega, mask_omega):
+        I = img_subset
+        I.requires_grad_(True)
+
+        net_i = {}
+        for i in range(1, self.n_recurrent + 1):
+
+            net_i['r%d_img_pred' % i] = self.net_G(I)  # output recon image
+            net_i['r%d_img_dc_pred' % i], _ = self.dcs_I[i - 1](net_i['r%d_img_pred' % i], k_subset, mask_subset)
+            I = net_i['r%d_img_dc_pred' % i]
+
+        loss_img_dc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_img_dc = loss_img_dc + self.criterion(
+                fft2_tensor(net_i['r%d_img_dc_pred' % j]) * mask_omega,
+                k_omega)
+
+        return I, loss_img_dc
+
+    def forward(self, *args, **kwargs):
+        return self.forward_i(self, *args, **kwargs)
+
+
+class OriginalRecurrentModel(nn.Module):
+    def __init__(self, opts):
+        super(OriginalRecurrentModel, self).__init__()
+
+        self.networks = []
+
+        self.n_recurrent = opts.n_recurrent
+
+        self.net_G_I = get_generator(opts.net_G, opts)
+        self.net_G_K = get_generator(opts.net_G, opts)
+        self.networks.append(self.net_G_I)
+        self.networks.append(self.net_G_K)
+
+        # param = list(self.net_G_I.parameters()) + list(self.net_G_K.parameters())
+        # self.optimizer_G = torch.optim.Adam(param,
+        #                                     lr=opts.lr,
+        #                                     betas=(opts.beta1, opts.beta2),
+        #                                     weight_decay=opts.weight_decay)
+        # self.optimizers.append(self.optimizer_G)
+
+        self.criterion = nn.L1Loss()
+
+        self.opts = opts
+
+        # data consistency layers in image space & k-space
+        dcs_I = []
+        for i in range(self.n_recurrent):
+            dcs_I.append(DataConsistencyInKspace_I(noise_lvl=None))
+        self.dcs_I = dcs_I
+
+        dcs_K = []
+        for i in range(self.n_recurrent):
+            dcs_K.append(DataConsistencyInKspace_K(noise_lvl=None))
+        self.dcs_K = dcs_K
+
+    def setgpu(self, gpu_ids):
+        self.device = torch.device('cuda:{}'.format(gpu_ids[0]))
+
+    def initialize(self):
+        [net.apply(gaussian_weights_init) for net in self.networks]
+
+    def forward(self, input_image, input_k, input_mask, omega_k, omega_mask):
+        I = input_image
+        I.requires_grad_(True)
+
+        net = {}
+        for i in range(1, self.n_recurrent + 1):
+            '''Image Space'''
+            x_I = I
+
+            net['r%d_img_pred' % i] = self.net_G_I(x_I)  # output recon image
+            net['r%d_img_dc_pred' % i], _ = self.dcs_I[i - 1](net['r%d_img_pred' % i], input_k, input_mask)
+
+            '''K Space'''
+            net['r%d_kspc_img_dc_pred' % i] = fft2_tensor(net['r%d_img_dc_pred' % i])  # output data consistency image's kspace
+
+            x_K = net['r%d_kspc_img_dc_pred' % i]
+
+            net['r%d_kspc_pred' % i] = self.net_G_K(x_K)  # output recon kspace
+            I, _ = self.dcs_K[i - 1](net['r%d_kspc_pred' % i], input_k, input_mask)  # output data consistency images
+
+        self.net = net
+        self.recon = I
+
+        # calculate the loss
+        loss_G_L1 = 0
+
+        # Image domain
+        loss_img_dc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_img_dc = loss_img_dc + self.criterion(fft2_tensor(self.net['r%d_img_dc_pred' % j]) * omega_mask, omega_k)
+
+        # Kspace domain
+        loss_kspc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_kspc = loss_kspc + self.criterion(self.net['r%d_kspc_pred' % j] * omega_mask, omega_k)
+
+        loss_G_L1 = loss_img_dc + loss_kspc
+        self.loss_G_L1 = loss_G_L1.item()
+        self.loss_img = loss_img_dc.item()
+        self.loss_kspc = loss_kspc.item()
+
+        total_loss = loss_G_L1
+
+        return I, total_loss
+
+    # def update_G(self):
+    #     loss_G_L1 = 0
+    #     self.optimizer_G.zero_grad()
+    #
+    #     # Image domain
+    #     loss_img_dc = 0
+    #     for j in range(1, self.n_recurrent + 1):
+    #         loss_img_dc = loss_img_dc + self.criterion(self.net['r%d_img_dc_pred' % j], self.tag_image_full)
+    #
+    #     # Kspace domain
+    #     loss_kspc = 0
+    #     for j in range(1, self.n_recurrent + 1):
+    #         loss_kspc = loss_kspc + self.criterion(self.net['r%d_kspc_pred' % j].permute(0, 2, 3, 1), self.tag_kspace_full)
+    #
+    #     loss_G_L1 = loss_img_dc + loss_kspc
+    #     self.loss_G_L1 = loss_G_L1.item()
+    #     self.loss_img = loss_img_dc.item()
+    #     self.loss_kspc = loss_kspc.item()
+    #
+    #     total_loss = loss_G_L1
+    #     total_loss.backward()
+    #     self.optimizer_G.step()
+    #
+    # def optimize(self):
+    #     self.loss_G_L1 = 0
+    #
+    #     self.forward()
+    #     self.update_G()

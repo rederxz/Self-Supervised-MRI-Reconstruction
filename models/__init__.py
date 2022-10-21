@@ -1,4 +1,5 @@
 from models import du_recurrent_model
+from du_recurrent_model import KRNet, IRNet
 
 
 def create_model(opts):

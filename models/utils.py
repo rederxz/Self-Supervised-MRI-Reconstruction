@@ -5,6 +5,7 @@ import numpy as np
 from math import log10
 from torch.optim import lr_scheduler
 import pdb
+from mri_tools import fft2_tensor, ifft2_tensor
 
 
 def get_nonlinearity(name):
@@ -134,16 +135,18 @@ class DataConsistencyInKspace_I(nn.Module):
         """
 
         if x.dim() == 4: # input is 2D
-            x = x.permute(0, 2, 3, 1)
+            # x = x.permute(0, 2, 3, 1)
+            pass
         else:
             raise ValueError("error in data consistency layer!")
 
-        k = fft2(x)
-        out = data_consistency(k, k0, mask.repeat(1, 1, 1, 2), self.noise_lvl)
-        x_res = ifft2(out)
+        k = fft2_tensor(x)
+        out = data_consistency(k, k0, mask, self.noise_lvl)
+        x_res = ifft2_tensor(out)
 
         if x.dim() == 4:
-            x_res = x_res.permute(0, 3, 1, 2)
+            # x_res = x_res.permute(0, 3, 1, 2)
+            pass
         else:
             raise ValueError("Iuput dimension is wrong, it has to be a 2D input!")
 
@@ -174,15 +177,17 @@ class DataConsistencyInKspace_K(nn.Module):
         """
 
         if k.dim() == 4:  # input is 2D
-            k = k.permute(0, 2, 3, 1)
+            # k = k.permute(0, 2, 3, 1)
+            pass
         else:
             raise ValueError("error in data consistency layer!")
 
-        out = data_consistency(k, k0, mask.repeat(1, 1, 1, 2), self.noise_lvl)
-        x_res = ifft2(out)
+        out = data_consistency(k, k0, mask, self.noise_lvl)
+        x_res = ifft2_tensor(out)
 
         if k.dim() == 4:
-            x_res = x_res.permute(0, 3, 1, 2)
+            # x_res = x_res.permute(0, 3, 1, 2)
+            pass
         else:
             raise ValueError("Iuput dimension is wrong, it has to be a 2D input!")
 

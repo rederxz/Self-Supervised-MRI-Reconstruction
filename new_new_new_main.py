@@ -19,7 +19,9 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 # Custom
 # from net import ParallelNetwork as Network
-from net import ParallelKINetwork as Network
+# from net import ParallelKINetwork as Network
+# from net import ParallelDuDoRNetwork as Network
+from net import ParallelKINetworkDC as Network
 from IXI_dataset import IXIData as Dataset
 from mri_tools import *
 from utils import psnr_slice, ssim_slice
@@ -66,7 +68,7 @@ parser.add_argument('--mode', '-m', type=str, default='train', help='whether tra
 parser.add_argument('--pretrained', '-pt', type=bool, default=False, help='whether load checkpoint')
 
 parser.add_argument('--net_G', type=str, default='DRDN', help='generator network')   # DRDN / SCNN
-parser.add_argument('--n_recurrent', type=int, default=5, help='Number of reccurent block in model')
+parser.add_argument('--n_recurrent', type=int, default=2, help='Number of reccurent block in model')
 parser.add_argument('--use_prior', default=False, action='store_true', help='use prior')   # True / False
 parser.add_argument('--gpu_ids', type=int, nargs='+', default=[0], help='list of gpu ids')
 
@@ -218,7 +220,9 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
         under_kspace = fft2_tensor(label) * mask_under
         under_img = ifft2_tensor(under_kspace)
         net_kspace_up = under_kspace * mask_net_up
-        net_img_down = ifft2_tensor(under_kspace * mask_net_down)
+        net_img_up = ifft2_tensor(net_kspace_up)
+        net_kspace_down = under_kspace * mask_net_down
+        net_img_down = ifft2_tensor(net_kspace_down)
 
         # plt.imsave('under_kspace.png', abs(torch.view_as_complex(under_kspace.permute(0, 2, 3, 1).contiguous()).cpu())[0])
         # plt.imsave('under_img.png', abs(torch.view_as_complex(under_img.permute(0, 2, 3, 1).contiguous()).cpu())[0])
@@ -228,6 +232,8 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
         if mode == 'test':
             net_img_up = net_img_down = under_img
             mask_net_up = mask_net_down = mask_under
+
+        #  1
         output_k, recon_loss_up, output_i, recon_loss_down = model(mask_under,
                                                                  under_kspace,
                                                                  under_img,
@@ -238,6 +244,24 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
         diff_otherf = (output_k - fft2_tensor(output_i)) * (1 - mask_under)
         diff_loss = criterion(diff_otherf, torch.zeros_like(diff_otherf))
         batch_loss = recon_loss_up + recon_loss_down + 0.01 * diff_loss
+        # batch_loss = recon_loss_up + recon_loss_down
+
+        # 2
+        # output_up, recon_loss_up, output_down, recon_loss_down = model(mask_under,
+        #                                                          under_kspace,
+        #                                                          under_img,
+        #                                                          mask_net_up,
+        #                                                          net_img_up,
+        #                                                          net_kspace_up,
+        #                                                          mask_net_down,
+        #                                                          net_img_down,
+        #                                                          net_kspace_down)
+        # diff_otherf = (fft2_tensor(output_up) - fft2_tensor(output_down)) * (1 - mask_under)
+        # diff_loss = criterion(diff_otherf, torch.zeros_like(diff_otherf))
+        # batch_loss = recon_loss_up + recon_loss_down + 0.01 * diff_loss
+        # # batch_loss = recon_loss_up + recon_loss_down
+        # output_i = output_down
+
         if mode == 'train':
             optimizer.zero_grad()
             batch_loss.backward()
@@ -288,9 +312,10 @@ def solvers(rank, ngpus_per_node, args):
             logger.info('Current best ssim in train phase is {}.'.format(best_ssim))
             logger.info('The model is loaded.')
     elif args.use_init_weights:
-        init_weights(model, init_type=args.init_type, gain=args.gain)
-        if rank == 0:
-            logger.info('Initialize model with {}.'.format(args.init_type))
+        pass
+        # init_weights(model, init_type=args.init_type, gain=args.gain)
+        # if rank == 0:
+        #     logger.info('Initialize model with {}.'.format(args.init_type))
     model = model.to(rank)
     model = DDP(model, device_ids=[rank])
 
@@ -343,11 +368,14 @@ def solvers(rank, ngpus_per_node, args):
         train_sampler.set_epoch(epoch)
         train_log = [epoch]
         epoch_start_time = time.time()
+
         model.train()
         train_log = forward('train', rank, model, train_loader, criterion, optimizer, train_log, args)
+
         model.eval()
         with torch.no_grad():
             train_log = forward('val', rank, model, val_loader, criterion, optimizer, train_log, args)
+
         epoch_time = time.time() - epoch_start_time
         # train information
         epoch = train_log[0]
