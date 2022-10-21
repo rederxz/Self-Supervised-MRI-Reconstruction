@@ -7,6 +7,7 @@ import shutil
 import time
 import numpy as np
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 # PyTorch
 import torch
 import torch.nn as nn
@@ -17,10 +18,12 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 # Custom
-from net import ParallelNetwork as Network
+# from net import ParallelNetwork as Network
+from net import ParallelKINetwork as Network
 from IXI_dataset import IXIData as Dataset
-from mri_tools import rA, rAtA, rfft2, rifft2
+from mri_tools import *
 from utils import psnr_slice, ssim_slice
+from paired_dataset import *
 
 os.environ['CUDA_DEVICE_ORDER'] = 'PCI_BUS_ID'
 # os.environ['CUDA_VISIBLE_DEVICES'] = '0, 1'
@@ -40,7 +43,7 @@ parser.add_argument('--num-layers', type=int, default=5, help='number of iterati
 # learning rate, batch size, and etc
 parser.add_argument('--seed', type=int, default=30, help='random seed number')
 parser.add_argument('--lr', '-lr', type=float, default=1e-4, help='initial learning rate')
-parser.add_argument('--batch-size', type=int, default=4, help='batch size of single gpu')
+parser.add_argument('--batch-size', type=int, default=2, help='batch size of single gpu')
 parser.add_argument('--num-workers', type=int, default=8, help='number of workers')
 parser.add_argument('--warmup-epochs', type=int, default=10, help='number of warmup epochs')
 parser.add_argument('--num-epochs', type=int, default=500, help='maximum number of epochs')
@@ -62,6 +65,18 @@ parser.add_argument('--loss-curve-path', type=str, default='./run/loss_curve/', 
 parser.add_argument('--mode', '-m', type=str, default='train', help='whether training or test model, value should be set to train or test')
 parser.add_argument('--pretrained', '-pt', type=bool, default=False, help='whether load checkpoint')
 
+parser.add_argument('--net_G', type=str, default='DRDN', help='generator network')   # DRDN / SCNN
+parser.add_argument('--n_recurrent', type=int, default=5, help='Number of reccurent block in model')
+parser.add_argument('--use_prior', default=False, action='store_true', help='use prior')   # True / False
+parser.add_argument('--gpu_ids', type=int, nargs='+', default=[0], help='list of gpu ids')
+
+parser.add_argument('--train', metavar='/path/to/training_data', default="./fastMRI_brain_DICOM/t1_t2_paired_6875_train.csv", type=str)
+parser.add_argument('--val', metavar='/path/to/validation_data', default="./fastMRI_brain_DICOM/t1_t2_paired_6875_val.csv", type=str)
+parser.add_argument('--test', metavar='/path/to/test_data', default="./fastMRI_brain_DICOM/t1_t2_paired_6875_test.csv", type=str)
+parser.add_argument('--prefetch', action='store_false')
+parser.add_argument('--train-obj-limit', type=int, default=20, help='number of objects in training set')
+parser.add_argument('--val-obj-limit', type=int, default=5, help='number of objects in val set')
+parser.add_argument('--test-obj-limit', type=int, default=30, help='number of objects in test set')
 
 def create_logger():
     logger = logging.getLogger()
@@ -125,23 +140,91 @@ class EarlyStopping:
             self.counter = 0
 
 
+class Prefetch(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        super().__init__()
+        self.dataset = [i for i in tqdm(dataset, leave=False)]
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, ind):
+        return self.dataset[ind]
+
+def get_dataset(args):
+    print('loading data...')
+    volumes_train = get_paired_volume_datasets(
+            args.train, crop=256, protocals=['T2'],
+            object_limit=args.train_obj_limit,
+            u_mask_path=args.u_mask_path,
+            s_mask_up_path=args.s_mask_up_path,
+            s_mask_down_path=args.s_mask_down_path)
+    volumes_val = get_paired_volume_datasets(
+            args.val, crop=256, protocals=['T2'],
+            object_limit=args.val_obj_limit,
+            u_mask_path=args.u_mask_path,
+            s_mask_up_path=args.s_mask_up_path,
+            s_mask_down_path=args.s_mask_down_path
+    )
+    volumes_test = get_paired_volume_datasets(
+            args.test, crop=256, protocals=['T2'],
+            object_limit=args.test_obj_limit,
+            u_mask_path=args.u_mask_path,
+            s_mask_up_path=args.s_mask_up_path,
+            s_mask_down_path=args.s_mask_down_path
+    )
+    slices_train = torch.utils.data.ConcatDataset(volumes_train)
+    slices_val = torch.utils.data.ConcatDataset(volumes_val)
+    slices_test = torch.utils.data.ConcatDataset(volumes_test)
+    if args.prefetch:
+        # load all data to ram
+        slices_train = Prefetch(slices_train)
+        slices_val = Prefetch(slices_val)
+        slices_test = Prefetch(slices_test)
+    # loader_train = torch.utils.data.DataLoader(
+    #         slices_train, batch_size=args.batch_size, shuffle=True,
+    #         num_workers=args.num_workers, pin_memory=True, drop_last=True)
+    # loader_val = torch.utils.data.DataLoader(
+    #         slices_val, batch_size=args.batch_size, shuffle=False,
+    #         num_workers=args.num_workers, pin_memory=True, drop_last=True)
+    # loader_test = torch.utils.data.DataLoader(
+    #         slices_test, batch_size=args.batch_size, shuffle=False,
+    #         num_workers=args.num_workers, pin_memory=True, drop_last=True)
+
+    return slices_train, slices_val, slices_test
+
+
 def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
     assert mode in ['train', 'val', 'test']
     loss, psnr, ssim = 0.0, 0.0, 0.0
     t = tqdm(dataloader, desc=mode + 'ing', total=int(len(dataloader))) if rank == 0 else dataloader
     for iter_num, data_batch in enumerate(t):
-        label = data_batch[0].to(rank, non_blocking=True)
-        mask_under = data_batch[1].to(rank, non_blocking=True)
-        mask_net_up = data_batch[2].to(rank, non_blocking=True)
-        mask_net_down = data_batch[3].to(rank, non_blocking=True)
-        # fname = data_batch[4]
-        # slice_id = data_batch[5]
+        label = data_batch[0].to(rank, non_blocking=True)  # full sampled image [bs, 1, x, y]
+        label = torch.view_as_real(label[:, 0]).permute(0, 3, 1, 2).contiguous()  # full sampled image [bs, 2, x, y]
+        mask_under = data_batch[1].to(rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
+        mask_net_up = data_batch[2].to(rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
+        mask_net_down = data_batch[3].to(rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
 
-        under_img = rAtA(label, mask_under)
-        under_kspace = rA(label, mask_under)
-        net_img_up = rAtA(label, mask_net_up)
-        net_kspace_up = rA(label, mask_net_up)
-        net_img_down = rAtA(label, mask_net_down)
+        # print(label.shape)
+        # print(mask_under.shape)
+        # print(mask_net_up.shape)
+        # print(mask_net_down.shape)
+
+        # plt.imsave('label.png', abs(torch.view_as_complex(label.permute(0, 2, 3, 1).contiguous()).cpu())[0])
+        # plt.imsave('mask_under.png', mask_under[0, 0].cpu())
+        # plt.imsave('mask_net_up.png', mask_net_up[0, 0].cpu())
+        # plt.imsave('mask_net_down.png', mask_net_down[0, 0].cpu())
+
+        under_kspace = fft2_tensor(label) * mask_under
+        under_img = ifft2_tensor(under_kspace)
+        net_kspace_up = under_kspace * mask_net_up
+        net_img_down = ifft2_tensor(under_kspace * mask_net_down)
+
+        # plt.imsave('under_kspace.png', abs(torch.view_as_complex(under_kspace.permute(0, 2, 3, 1).contiguous()).cpu())[0])
+        # plt.imsave('under_img.png', abs(torch.view_as_complex(under_img.permute(0, 2, 3, 1).contiguous()).cpu())[0])
+        # plt.imsave('net_kspace_up.png', abs(torch.view_as_complex(net_kspace_up.permute(0, 2, 3, 1).contiguous()).cpu())[0])
+        # plt.imsave('net_img_down.png', abs(torch.view_as_complex(net_img_down.permute(0, 2, 3, 1).contiguous()).cpu())[0])
+
         if mode == 'test':
             net_img_up = net_img_down = under_img
             mask_net_up = mask_net_down = mask_under
@@ -151,11 +234,8 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
                                                                  mask_net_up,
                                                                  net_kspace_up,
                                                                  mask_net_down,
-                                                                 net_img_down.permute(0, 3, 1, 2).contiguous()
-        )
-        output_up_ispace = rifft2(output_k.permute(0, 2, 3, 1).contiguous())
-        output_down_kspace = rfft2(output_i.permute(0, 2, 3, 1).contiguous())
-        diff_otherf = (output_k - output_down_kspace) * (1 - mask_under)
+                                                                 net_img_down)
+        diff_otherf = (output_k - fft2_tensor(output_i)) * (1 - mask_under)
         diff_loss = criterion(diff_otherf, torch.zeros_like(diff_otherf))
         batch_loss = recon_loss_up + recon_loss_down + 0.01 * diff_loss
         if mode == 'train':
@@ -163,6 +243,8 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
             batch_loss.backward()
             optimizer.step()
         else:
+            label = torch.abs(torch.view_as_complex(label.permute(0, 2, 3, 1).contiguous()))
+            output_i = torch.abs(torch.view_as_complex(output_i.permute(0, 2, 3, 1).contiguous()))
             psnr += psnr_slice(label, output_i)
             ssim += ssim_slice(label, output_i)
         loss += batch_loss.item()
@@ -189,7 +271,7 @@ def solvers(rank, ngpus_per_node, args):
     start_epoch = 0
     best_ssim = 0.0
     # model
-    model = Network(num_layers=args.num_layers, rank=rank)
+    model = Network(args)
     # whether load checkpoint
     if args.pretrained or args.mode == 'test':
         model_path = os.path.join(args.model_save_path, 'best_checkpoint.pth.tar')
@@ -221,9 +303,11 @@ def solvers(rank, ngpus_per_node, args):
     scheduler_re = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode='max', factor=0.3, patience=20)
     early_stopping = EarlyStopping(patience=50, delta=1e-5)
 
+    train_set, val_set, test_set = get_dataset(args)
+
     # test step
     if args.mode == 'test':
-        test_set = Dataset(args.test_path, args.u_mask_path, args.s_mask_up_path, args.s_mask_down_path, args.test_sample_rate)
+        # test_set = Dataset(args.test_path, args.u_mask_path, args.s_mask_up_path, args.s_mask_down_path, args.test_sample_rate)
         test_loader = DataLoader(dataset=test_set, batch_size=args.batch_size, shuffle=False, pin_memory=True)
         if rank == 0:
             logger.info('The size of test dataset is {}.'.format(len(test_set)))
@@ -243,13 +327,13 @@ def solvers(rank, ngpus_per_node, args):
         return
 
     # training step
-    train_set = Dataset(args.train_path, args.u_mask_path, args.s_mask_up_path, args.s_mask_down_path, args.train_sample_rate)
+    # train_set = Dataset(args.train_path, args.u_mask_path, args.s_mask_up_path, args.s_mask_down_path, args.train_sample_rate)
     train_sampler = DistributedSampler(train_set)
     train_loader = DataLoader(
         dataset=train_set, batch_size=args.batch_size, shuffle=(train_sampler is None),
         pin_memory=True, sampler=train_sampler
     )
-    val_set = Dataset(args.val_path, args.u_mask_path, args.s_mask_up_path, args.s_mask_down_path, args.val_sample_rate)
+    # val_set = Dataset(args.val_path, args.u_mask_path, args.s_mask_up_path, args.s_mask_down_path, args.val_sample_rate)
     val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, shuffle=False, pin_memory=True)
     if rank == 0:
         logger.info('The size of training dataset and validation dataset is {} and {}, respectively.'.format(len(train_set), len(val_set)))
