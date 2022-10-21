@@ -117,9 +117,9 @@ class ParallelKINetworkV2(nn.Module):
     def __init__(self, opts):
         super(ParallelKINetworkV2, self).__init__()
 
-        self.network_1 = KRNet(opts)
+        self.network_1 = du_recurrent_model.KRNet(opts)
         self.network_1.initialize()
-        self.network_2 = IRNet(opts)
+        self.network_2 = du_recurrent_model.IRNet(opts)
         self.network_2.initialize()
 
         self.criterion = nn.L1Loss()
