@@ -429,7 +429,7 @@ def main():
     os.makedirs(args.output_path, exist_ok=True)
     args.model_save_path = os.path.join(args.output_path, 'checkpoints')
     args.loss_curve_path = os.path.join(args.output_path, 'loss_curve')
-    args.log_path = os.path.join(args.output_path, 'log')
+    args.log_path = os.path.join(args.output_path, 'log.txt')
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
