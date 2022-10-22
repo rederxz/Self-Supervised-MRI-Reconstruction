@@ -105,8 +105,7 @@ class ParallelIINetworkDC(nn.Module):
         self.i_network_2 = du_recurrent_model.RecurrentModelDC(opts)
         self.i_network_2.initialize()
 
-    def forward(self, mask_1, mask_1_k, mask_1_i, mask_2, mask_2_k, mask_3, mask_3_i):
-        mask_2_i = ifft2_tensor(mask_2_k)
+    def forward(self, mask_1, mask_1_k, mask_1_i, mask_2, mask_2_i, mask_2_k, mask_3, mask_3_i, mask_3_k):
         i_output_1, loss_i_branch_1 = self.i_network_1.forward_i(mask_2_i, mask_2, mask_1_k, mask_1)
         i_output_2, loss_i_branch_2 = self.i_network_2.forward_i(mask_3_i, mask_3, mask_1_k, mask_1)
         return i_output_1, loss_i_branch_1, i_output_2, loss_i_branch_2
@@ -120,8 +119,7 @@ class ParallelKKNetworkDC(nn.Module):
         self.k_network_2 = du_recurrent_model.RecurrentModelDC(opts)
         self.k_network_2.initialize()
 
-    def forward(self, mask_1, mask_1_k, mask_1_i, mask_2, mask_2_k, mask_3, mask_3_i):
-        mask_3_k = fft2_tensor(mask_3_i)
+    def forward(self, mask_1, mask_1_k, mask_1_i, mask_2, mask_2_i, mask_2_k, mask_3, mask_3_i, mask_3_k):
         k_output_1, loss_k_branch_1 = self.k_network_1.forward_k(mask_2_k, mask_2, mask_1_k, mask_1)
         k_output_2, loss_k_branch_2 = self.k_network_2.forward_k(mask_3_k, mask_3, mask_1_k, mask_1)
         return k_output_1, loss_k_branch_1, k_output_2, loss_k_branch_2
