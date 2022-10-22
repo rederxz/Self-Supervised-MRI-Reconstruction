@@ -65,6 +65,7 @@ parser.add_argument('--test-sample-rate', '-tesr', type=float, default=0.01, hel
 parser.add_argument('--output-path', type=str, default='./run/', help='output path')
 parser.add_argument('--model-save-path', type=str, default='./run/checkpoints/', help='save path of trained model')
 parser.add_argument('--loss-curve-path', type=str, default='./run/loss_curve/', help='save path of loss curve in tensorboard')
+parser.add_argument('--log-path', type=str, default='./run/log.txt', help='save path of log')
 # others
 parser.add_argument('--mode', '-m', type=str, default='train', help='whether training or test model, value should be set to train or test')
 parser.add_argument('--pretrained', '-pt', type=bool, default=False, help='whether load checkpoint')
@@ -80,15 +81,15 @@ parser.add_argument('--test', metavar='/path/to/test_data', default="./fastMRI_b
 parser.add_argument('--prefetch', action='store_false')
 parser.add_argument('--train-obj-limit', type=int, default=20, help='number of objects in training set')
 parser.add_argument('--val-obj-limit', type=int, default=5, help='number of objects in val set')
-parser.add_argument('--test-obj-limit', type=int, default=30, help='number of objects in test set')
+parser.add_argument('--test-obj-limit', type=int, default=20, help='number of objects in test set')
 
-def create_logger():
+def create_logger(args):
     logger = logging.getLogger()
     logger.setLevel(level=logging.DEBUG)
     file_formatter = logging.Formatter('%(asctime)s %(filename)s [line:%(lineno)d] %(levelname)s:\t%(message)s')
     stream_formatter = logging.Formatter('%(levelname)s:\t%(message)s')
 
-    file_handler = logging.FileHandler(filename='./run/log.txt', mode='a+', encoding='utf-8')
+    file_handler = logging.FileHandler(filename=args.log_path, mode='a+', encoding='utf-8')
     file_handler.setLevel(level=logging.DEBUG)
     file_handler.setFormatter(file_formatter)
 
@@ -233,6 +234,7 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
 
         if mode == 'test':
             net_img_up = net_img_down = under_img
+            net_kspace_up = net_kspace_down = under_kspace
             mask_net_up = mask_net_down = mask_under
 
         #  1
@@ -288,7 +290,7 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
 
 def solvers(rank, ngpus_per_node, args):
     if rank == 0:
-        logger = create_logger()
+        logger = create_logger(args)
         logger.info('Running distributed data parallel on {} gpus.'.format(args.world_size))
     torch.cuda.set_device(rank)
     torch.distributed.init_process_group(backend='nccl', init_method=args.init_method, world_size=args.world_size, rank=rank)
