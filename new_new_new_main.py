@@ -63,9 +63,9 @@ parser.add_argument('--val-sample-rate', '-vsr', type=float, default=0.01, help=
 parser.add_argument('--test-sample-rate', '-tesr', type=float, default=0.01, help='sampling rate of test data')
 # save path
 parser.add_argument('--output-path', type=str, default='./run/', help='output path')
-parser.add_argument('--model-save-path', type=str, default='./run/checkpoints/', help='save path of trained model')
-parser.add_argument('--loss-curve-path', type=str, default='./run/loss_curve/', help='save path of loss curve in tensorboard')
-parser.add_argument('--log-path', type=str, default='./run/log.txt', help='save path of log')
+# parser.add_argument('--model-save-path', type=str, default='./run/checkpoints/', help='save path of trained model')
+# parser.add_argument('--loss-curve-path', type=str, default='./run/loss_curve/', help='save path of loss curve in tensorboard')
+# parser.add_argument('--log-path', type=str, default='./run/log.txt', help='save path of log')
 # others
 parser.add_argument('--mode', '-m', type=str, default='train', help='whether training or test model, value should be set to train or test')
 parser.add_argument('--pretrained', '-pt', type=bool, default=False, help='whether load checkpoint')
@@ -427,6 +427,9 @@ def main():
     args = parser.parse_args()
     args.world_size = args.nodes * args.gpus
     os.makedirs(args.output_path, exist_ok=True)
+    args.model_save_path = os.path.join(args.output_path, 'checkpoints')
+    args.loss_curve_path = os.path.join(args.output_path, 'loss_curve')
+    args.log_path = os.path.join(args.output_path, 'log')
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
