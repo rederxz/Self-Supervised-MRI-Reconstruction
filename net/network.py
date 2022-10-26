@@ -30,7 +30,7 @@ class ParallelKINetworkV2(nn.Module):
         self.target_metric = 'ssim1'
         self.best_target_metric = -1.
 
-        self.save_every = 10
+        self.save_every = 1
         self.model_dir = args.model_save_path
         self.model_path = os.path.join(self.args.model_save_path, 'checkpoint.pth.tar')
         self.best_model_path = os.path.join(self.args.model_save_path, 'best_checkpoint.pth.tar')
@@ -170,16 +170,19 @@ class ParallelKINetworkV2(nn.Module):
 
         return log
 
+    def before_train_one_epoch(self):
+        self.epoch += 1
+
     def train_one_epoch(self, dataloader):
+        self.before_train_one_epoch()
         self.train()
         log = self.run_one_epoch('train', dataloader)
         self.after_train_one_epoch(log)
         return log
 
     def after_train_one_epoch(self, log):
-        self.epoch += 1
         # warmup
-        if self.epoch <= self.args.warmup_epochs and not self.args.pretrained:  # warmup
+        if self.epoch <= self.args.warmup_epochs:  # warmup
             self.scheduler_wu.step()
 
     def eval_one_epoch(self, dataloader):
@@ -218,7 +221,7 @@ class ParallelKINetworkV2(nn.Module):
         # save checkpoint
         checkpoint = {
             'epoch': self.epoch,
-            'optimizer': self.optimizer,
+            'optimizer': self.optimizer.state_dict(),
             'best_metric': self.best_target_metric,
             'model': self.state_dict()
         }
@@ -230,10 +233,15 @@ class ParallelKINetworkV2(nn.Module):
     def save_best(self):
         self.save(self.best_model_path)
 
-    def load(self):
-        assert os.path.isfile(self.best_model_path)
-        checkpoint = torch.load(self.best_model_path, map_location='cuda:{}'.format(self.rank))
+    def load(self, model_path=None):
+        if model_path is None:
+            model_path = self.model_path
+        assert os.path.isfile(model_path)
+        checkpoint = torch.load(model_path, map_location='cuda:{}'.format(self.rank))
         self.epoch = checkpoint['epoch']
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.best_target_metric = checkpoint['best_metric']
         self.load_state_dict(checkpoint['model'])
+
+    def load_best(self):
+        self.load(self.best_model_path)
