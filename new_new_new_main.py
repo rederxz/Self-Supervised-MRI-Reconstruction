@@ -238,32 +238,32 @@ def forward(mode, rank, model, dataloader, criterion, optimizer, log, args):
             mask_net_up = mask_net_down = mask_under
 
         #  1
-        # output_k, recon_loss_up, output_i, recon_loss_down = model(mask_under,
-        #                                                          under_kspace,
-        #                                                          under_img,
-        #                                                          mask_net_up,
-        #                                                          net_kspace_up,
-        #                                                          mask_net_down,
-        #                                                          net_img_down)
-        # diff_otherf = (output_k - fft2_tensor(output_i)) * (1 - mask_under)
-        # diff_loss = criterion(diff_otherf, torch.zeros_like(diff_otherf))
-        # batch_loss = recon_loss_up + recon_loss_down + 0.01 * diff_loss
-        # batch_loss = recon_loss_up + recon_loss_down
-
-        # 2
-        output_up, recon_loss_up, output_down, recon_loss_down = model(mask_under,
+        output_k, recon_loss_up, output_i, recon_loss_down = model(mask_under,
                                                                  under_kspace,
                                                                  under_img,
                                                                  mask_net_up,
-                                                                 net_img_up,
                                                                  net_kspace_up,
                                                                  mask_net_down,
-                                                                 net_img_down,
-                                                                 net_kspace_down)
-        diff_otherf = (fft2_tensor(output_up) - fft2_tensor(output_down)) * (1 - mask_under)
+                                                                 net_img_down)
+        diff_otherf = (output_k - fft2_tensor(output_i)) * (1 - mask_under)
         diff_loss = criterion(diff_otherf, torch.zeros_like(diff_otherf))
         batch_loss = recon_loss_up + recon_loss_down + 0.01 * diff_loss
-        output_i = output_down
+        # batch_loss = recon_loss_up + recon_loss_down
+
+        # 2
+        # output_up, recon_loss_up, output_down, recon_loss_down = model(mask_under,
+        #                                                          under_kspace,
+        #                                                          under_img,
+        #                                                          mask_net_up,
+        #                                                          net_img_up,
+        #                                                          net_kspace_up,
+        #                                                          mask_net_down,
+        #                                                          net_img_down,
+        #                                                          net_kspace_down)
+        # diff_otherf = (fft2_tensor(output_up) - fft2_tensor(output_down)) * (1 - mask_under)
+        # diff_loss = criterion(diff_otherf, torch.zeros_like(diff_otherf))
+        # batch_loss = recon_loss_up + recon_loss_down + 0.01 * diff_loss
+        # output_i = output_down
 
         if mode == 'train':
             optimizer.zero_grad()
@@ -298,8 +298,8 @@ def solvers(rank, ngpus_per_node, args):
     start_epoch = 0
     best_ssim = 0.0
     # model
-    # model = Network(args)
-    model = IINetwork(args)
+    model = Network(args)
+    # model = IINetwork(args)
     # whether load checkpoint
     if args.pretrained or args.mode == 'test':
         model_path = os.path.join(args.model_save_path, 'best_checkpoint.pth.tar')
