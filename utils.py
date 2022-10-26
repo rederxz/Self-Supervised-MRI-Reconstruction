@@ -1,5 +1,8 @@
 import torch
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+import logging
+from tqdm import tqdm
+from paired_dataset import get_paired_volume_datasets
 
 
 def psnr_slice(gt, pred, maxval=None):
@@ -40,3 +43,118 @@ def normalize_zero_to_one(data, eps=0.):
     data_min = float(data.min())
     data_max = float(data.max())
     return (data - data_min) / (data_max - data_min + eps)
+
+
+
+def create_logger(args):
+    logger = logging.getLogger()
+    logger.setLevel(level=logging.DEBUG)
+    file_formatter = logging.Formatter('%(asctime)s %(filename)s [line:%(lineno)d] %(levelname)s:\t%(message)s')
+    stream_formatter = logging.Formatter('%(levelname)s:\t%(message)s')
+
+    file_handler = logging.FileHandler(filename=args.log_path, mode='a+', encoding='utf-8')
+    file_handler.setLevel(level=logging.DEBUG)
+    file_handler.setFormatter(file_formatter)
+
+    stream_handler = logging.StreamHandler()
+    stream_handler.setLevel(level=logging.INFO)
+    stream_handler.setFormatter(stream_formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    return logger
+
+
+class EarlyStopping:
+    def __init__(self, patience=50, delta=0.0):
+        self.patience = patience
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.delta = delta
+
+    def __call__(self, metrics, loss=True):
+        score = -metrics if loss else metrics
+        if self.best_score is None:
+            self.best_score = score
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.counter = 0
+
+
+class SaveBest:
+    def __init__(self, model):
+        self.model = model
+        self.best_score = model.best_score
+
+    def __call__(self, score, higher=True):
+        """higher is better"""
+        better = score > self.best_score if higher else score < self.best_score
+        if better:
+            self.model.best_score = score
+            self.model.save()
+            self.model.savebest()
+
+
+class Prefetch(torch.utils.data.Dataset):
+    def __init__(self, dataset):
+        super().__init__()
+        self.dataset = [i for i in tqdm(dataset, leave=False)]
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, ind):
+        return self.dataset[ind]
+
+
+def get_dataset(args):
+    volumes_train = get_paired_volume_datasets(
+            args.train, crop=256, protocals=['T2'],
+            object_limit=args.train_obj_limit,
+            u_mask_path=args.u_mask_path,
+            s_mask_up_path=args.s_mask_up_path,
+            s_mask_down_path=args.s_mask_down_path)
+    volumes_val = get_paired_volume_datasets(
+            args.val, crop=256, protocals=['T2'],
+            object_limit=args.val_obj_limit,
+            u_mask_path=args.u_mask_path,
+            s_mask_up_path=args.s_mask_up_path,
+            s_mask_down_path=args.s_mask_down_path
+    )
+    volumes_test = get_paired_volume_datasets(
+            args.test, crop=256, protocals=['T2'],
+            object_limit=args.test_obj_limit,
+            u_mask_path=args.u_mask_path,
+            s_mask_up_path=args.s_mask_up_path,
+            s_mask_down_path=args.s_mask_down_path
+    )
+    slices_train = torch.utils.data.ConcatDataset(volumes_train)
+    slices_val = torch.utils.data.ConcatDataset(volumes_val)
+    slices_test = torch.utils.data.ConcatDataset(volumes_test)
+    if args.prefetch:
+        # load all data to ram
+        slices_train = Prefetch(slices_train)
+        slices_val = Prefetch(slices_val)
+        slices_test = Prefetch(slices_test)
+
+    return slices_train, slices_val, slices_test
+
+
+def get_dataset_split(args, split):
+    volumes = get_paired_volume_datasets(
+            getattr(args, split), crop=256, protocals=['T2'],
+            object_limit=args.train_obj_limit,
+            u_mask_path=args.u_mask_path,
+            s_mask_up_path=args.s_mask_up_path,
+            s_mask_down_path=args.s_mask_down_path)
+    slices = torch.utils.data.ConcatDataset(volumes)
+    if args.prefetch:
+        # load all data to ram
+        slices = Prefetch(slices)
+
+    return slices
