@@ -2,3 +2,5 @@ __pycache__
 runs
 .idea
 IXI_T1
+*.err
+*.out
