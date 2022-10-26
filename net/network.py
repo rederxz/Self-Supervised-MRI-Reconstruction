@@ -185,7 +185,7 @@ class ParallelKINetworkV2(nn.Module):
     def eval_one_epoch(self, dataloader):
         self.eval()
         with torch.no_grad():
-            log = self.run_one_epoch('test', dataloader)
+            log = self.run_one_epoch('val', dataloader)
         self.after_eval_one_epoch(log)
         return log
 
