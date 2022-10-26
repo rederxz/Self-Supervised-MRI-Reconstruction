@@ -27,7 +27,7 @@ class ParallelKINetworkV2(nn.Module):
         self.criterion = nn.MSELoss()
 
         self.epoch = 0
-        self.target_metric = 'ssim1'
+        self.target_metric = 'ssim2'
         self.best_target_metric = -1.
 
         self.save_every = 1

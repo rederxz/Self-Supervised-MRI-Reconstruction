@@ -135,8 +135,8 @@ def solvers(rank, ngpus_per_node, args):
             # output log
             print(val_log.keys())
             logger.info(f'epoch:{train_log["epoch"]:<8d}\t'
-                        f'time:{train_log["time"]:.5f}s\t'
-                        f'lr:{train_log["lr"]:.5f}\t'
+                        f'time:{train_log["time"]:.2f}s\t'
+                        f'lr:{train_log["lr"]:.8f}\t'
                         f'train_loss:{train_log["loss"]:.7f}\t'
                         f'val_loss:{val_log["loss"]:.7f}\t'
                         f'val_psnr1:{val_log["psnr1"]:.5f}\t'
