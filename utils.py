@@ -148,7 +148,7 @@ def get_dataset(args):
 def get_dataset_split(args, split):
     volumes = get_paired_volume_datasets(
             getattr(args, split), crop=256, protocals=['T2'],
-            object_limit=args.train_obj_limit,
+            object_limit=getattr(args, split+'_obj_limit'),
             u_mask_path=args.u_mask_path,
             s_mask_up_path=args.s_mask_up_path,
             s_mask_down_path=args.s_mask_down_path)

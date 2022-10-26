@@ -24,7 +24,7 @@ class ParallelKINetworkV2(nn.Module):
                                           list(self.network_i.parameters()),
                                           lr=args.lr)
 
-        self.criterion = nn.L1Loss()
+        self.criterion = nn.MSELoss()
 
         self.epoch = 0
         self.target_metric = 'ssim1'
@@ -84,7 +84,6 @@ class ParallelKINetworkV2(nn.Module):
         diff = (output_k - fft2_tensor(output_i)) * (1 - self.mask_omega)
         diff_loss = self.criterion(diff, torch.zeros_like(diff))
         loss = loss_k_branch + loss_i_branch + 0.01 * diff_loss
-        self.loss = loss
 
         output_i_1 = ifft2_tensor(output_k)
         output_i_2 = output_i
@@ -137,15 +136,15 @@ class ParallelKINetworkV2(nn.Module):
             self.set_input_image_with_masks(label, mask_under, mask_net_up, mask_net_down)
 
             if mode == 'train':
-                output_i_1, output_i_2, loss = self.update()
+                output_i_1, output_i_2, batch_loss = self.update()
             else:
-                output_i_1, output_i_2, loss, _psnr_1, _psnr_2, _ssim_1, _ssim_2 = self.test()
+                output_i_1, output_i_2, batch_loss, _psnr_1, _psnr_2, _ssim_1, _ssim_2 = self.test()
                 psnr_1 += _psnr_1
                 psnr_2 += _psnr_2
                 ssim_1 += _ssim_1
                 ssim_2 += _ssim_2
 
-            loss += loss.item()
+            loss += batch_loss.item()
 
         loss /= len(dataloader)
 
@@ -209,7 +208,6 @@ class ParallelKINetworkV2(nn.Module):
 
         # reduce on plateau
         self.scheduler_re.step(log[self.target_metric])  # reduce on plateau
-
 
     def test_one_epoch(self, dataloader):
         self.eval()
