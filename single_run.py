@@ -2,6 +2,7 @@
 import argparse
 import random
 # tool
+import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
@@ -93,16 +94,17 @@ def solvers(args):
     # data
     train_set, val_set = get_dataset_split(args, 'train'), get_dataset_split(args, 'val')
     train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, shuffle=True, pin_memory=True)
-    train_loader = tqdm(train_loader, desc='training', total=int(len(train_loader)))
     val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, shuffle=False, pin_memory=True)
-    val_loader = tqdm(val_loader, desc='valing', total=int(len(val_loader)))
+
     logger.info('The size of train dataset is {}.'.format(len(train_set)))
     logger.info('The size of val dataset is {}.'.format(len(val_set)))
 
     # training loop
     for epoch in range(model.epoch + 1, args.num_epochs + 1):
         # data and run one epoch
+        train_loader = tqdm(train_loader, desc='training', total=int(len(train_loader)))
         train_log = model.train_one_epoch(train_loader)
+        val_loader = tqdm(val_loader, desc='valing', total=int(len(val_loader)))
         val_log = model.eval_one_epoch(val_loader)
 
         # output log
@@ -136,7 +138,6 @@ def main():
 
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = True
-    torch.multiprocessing.spawn(solvers, nprocs=args.gpus, args=(args.gpus, args))
     solvers(args)
 
 
