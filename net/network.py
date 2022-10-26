@@ -2,8 +2,8 @@ import os
 import time
 
 import torch
+from torch import nn
 
-from net.net_parts import *
 from mri_tools import *
 from utils import *
 from models import *
@@ -14,6 +14,7 @@ class ParallelKINetworkV2(nn.Module):
     def __init__(self, rank, args):
         super(ParallelKINetworkV2, self).__init__()
 
+        self.args = args
         self.network_k = du_recurrent_model.KRNet(args)
         self.network_k.initialize()
         self.network_i = du_recurrent_model.IRNet(args)
@@ -26,16 +27,18 @@ class ParallelKINetworkV2(nn.Module):
         self.criterion = nn.L1Loss()
 
         self.epoch = 0
-        self.target_metric = 'SSIM1'
+        self.target_metric = 'ssim1'
         self.best_target_metric = -1.
 
+        self.save_every = 10
+        self.model_dir = args.model_save_path
         self.model_path = os.path.join(self.args.model_save_path, 'checkpoint.pth.tar')
         self.best_model_path = os.path.join(self.args.model_save_path, 'best_checkpoint.pth.tar')
 
-        self.args = args
         self.rank = rank
 
         # callbacks
+        self.signal_to_stop = False
         self.scheduler_wu = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optimizer, lr_lambda=lambda
             epoch: epoch / args.warmup_epochs if epoch <= args.warmup_epochs else 1)
         self.scheduler_re = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=self.optimizer, mode='max', factor=0.3,
@@ -122,9 +125,11 @@ class ParallelKINetworkV2(nn.Module):
 
         for iter_num, data_batch in enumerate(dataloader):
 
-            data_batch = data_batch.to(self.rank, non_blocking=True)
-            label = torch.view_as_real(data_batch[0][:, 0]).permute(0, 3, 1, 2).contiguous()
-            mask_under, mask_net_up, mask_net_down = data_batch.permute(0, 3, 1, 2).contiguous()
+            label = data_batch[0].to(self.rank, non_blocking=True)  # full sampled image [bs, 1, x, y]
+            label = torch.view_as_real(label[:, 0]).permute(0, 3, 1, 2).contiguous()  # full sampled image [bs, 2, x, y]
+            mask_under = data_batch[1].to(self.rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
+            mask_net_up = data_batch[2].to(self.rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
+            mask_net_down = data_batch[3].to(self.rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
 
             if mode == 'test':
                 mask_net_up = mask_net_down = mask_under
@@ -145,6 +150,7 @@ class ParallelKINetworkV2(nn.Module):
         loss /= len(dataloader)
 
         log = dict()
+        log['epoch'] = self.epoch
         log['loss'] = loss
         if mode == 'train':
             log['lr'] = self.optimizer.param_groups[0]['lr']
@@ -153,10 +159,10 @@ class ParallelKINetworkV2(nn.Module):
             ssim_1 /= len(dataloader)
             psnr_2 /= len(dataloader)
             ssim_2 /= len(dataloader)
-            log['psnr_1'] = psnr_1
-            log['psnr_2'] = psnr_2
-            log['ssim_1'] = ssim_1
-            log['ssim_2'] = ssim_2
+            log['psnr1'] = psnr_1
+            log['psnr2'] = psnr_2
+            log['ssim1'] = ssim_1
+            log['ssim2'] = ssim_2
 
         tok = time.time()
 
@@ -171,6 +177,7 @@ class ParallelKINetworkV2(nn.Module):
         return log
 
     def after_train_one_epoch(self, log):
+        self.epoch += 1
         # warmup
         if self.epoch <= self.args.warmup_epochs and not self.args.pretrained:  # warmup
             self.scheduler_wu.step()
@@ -212,22 +219,21 @@ class ParallelKINetworkV2(nn.Module):
         checkpoint = {
             'epoch': self.epoch,
             'optimizer': self.optimizer,
-            'best_ssim': self.best_ssim,
-            'model': self.module.state_dict()
+            'best_metric': self.best_target_metric,
+            'model': self.state_dict()
         }
         if model_path is None:
             model_path = self.model_path
-        os.makedirs(model_path, exist_ok=True)
+        os.makedirs(self.model_dir, exist_ok=True)
         torch.save(checkpoint, model_path)
 
     def save_best(self):
         self.save(self.best_model_path)
 
     def load(self):
-        model_path = os.path.join(self.args.model_save_path, 'best_checkpoint.pth.tar')
-        assert os.path.isfile(model_path)
-        checkpoint = torch.load(model_path, map_location='cuda:{}'.format(self.rank))
+        assert os.path.isfile(self.best_model_path)
+        checkpoint = torch.load(self.best_model_path, map_location='cuda:{}'.format(self.rank))
         self.epoch = checkpoint['epoch']
         self.optimizer.load_state_dict(checkpoint['optimizer'])
-        self.best_ssim = checkpoint['best_ssim']
+        self.best_target_metric = checkpoint['best_metric']
         self.load_state_dict(checkpoint['model'])

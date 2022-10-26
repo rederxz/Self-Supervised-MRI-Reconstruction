@@ -79,13 +79,16 @@ def solvers(rank, ngpus_per_node, args):
     model = Network(rank, args)
 
     # load checkpoint
-    model.load()
+    try:
+        model.load()
+    except:
+        pass
     model = model.to(rank)
     model = DDP(model, device_ids=[rank])
     if rank == 0:
-        logger.info('Load checkpoint at epoch {}.'.format(model.start_epoch))
-        logger.info('Current learning rate is {}.'.format(model.optimizer.param_groups[0]['lr']))
-        logger.info('Current best ssim in train phase is {}.'.format(model.best_ssim))
+        logger.info('Load checkpoint at epoch {}.'.format(model.module.epoch))
+        logger.info('Current learning rate is {}.'.format(model.module.optimizer.param_groups[0]['lr']))
+        logger.info('Current best metric in train phase is {}.'.format(model.module.best_target_metric))
 
     if args.mode == 'test':
         # data
@@ -95,7 +98,7 @@ def solvers(rank, ngpus_per_node, args):
             logger.info('The size of test dataset is {}.'.format(len(test_set)))
 
         # run one epoch
-        test_log = model.test_one_epoch(test_loader)
+        test_log = model.module.test_one_epoch(test_loader)
 
         # log
         if rank == 0:
@@ -115,19 +118,20 @@ def solvers(rank, ngpus_per_node, args):
     )
     val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, shuffle=False, pin_memory=True)
     if rank == 0:
-        train_loader = tqdm(train_loader, desc='training', total=int(len(train_loader))) if rank == 0 else train_loader
-        val_loader = tqdm(val_loader, desc='valing', total=int(len(val_loader))) if rank == 0 else val_loader
         logger.info('The size of train dataset is {}.'.format(len(train_set)))
         logger.info('The size of val dataset is {}.'.format(len(val_set)))
 
-    # training loop
-    for epoch in range(model.start_epoch + 1, args.num_epochs + 1):
-        # resample data for a new epoch
-        train_sampler.set_epoch(epoch)
 
-        # run one epoch
-        train_log = model.train_one_epoch(train_loader)
-        val_log = model.val_one_epoch(val_loader)
+
+    # training loop
+    for epoch in range(model.module.epoch + 1, args.num_epochs + 1):
+        # data and run one epoch
+        train_sampler.set_epoch(epoch)
+        train_loader = tqdm(train_loader, desc='training', total=int(len(train_loader))) if rank == 0 else train_loader
+        train_log = model.module.train_one_epoch(train_loader)
+
+        val_loader = tqdm(val_loader, desc='valing', total=int(len(val_loader))) if rank == 0 else val_loader
+        val_log = model.module.eval_one_epoch(val_loader)
 
         # log
         if rank == 0:
@@ -142,7 +146,7 @@ def solvers(rank, ngpus_per_node, args):
                         f'val_ssim1:{val_log["ssim1"]:.7f}\t'
                         f'val_ssim2:{val_log["ssim2"]:.5f}\t')
 
-        if model.signal_to_stop:
+        if model.module.signal_to_stop:
             if rank == 0:
                 logger.info('The experiment is early stop!')
             break

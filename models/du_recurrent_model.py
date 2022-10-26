@@ -291,7 +291,7 @@ class KRNet(nn.Module):
         return K, loss_kspc
 
     def forward(self, *args, **kwargs):
-        return self.forward_k(self, *args, **kwargs)
+        return self.forward_k(*args, **kwargs)
 
 
 # noinspection PyCallingNonCallable
@@ -343,7 +343,7 @@ class IRNet(nn.Module):
         return I, loss_img_dc
 
     def forward(self, *args, **kwargs):
-        return self.forward_i(self, *args, **kwargs)
+        return self.forward_i(*args, **kwargs)
 
 
 class OriginalRecurrentModel(nn.Module):
