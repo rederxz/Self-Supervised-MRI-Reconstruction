@@ -1,5 +1,6 @@
 # System / Python
 import argparse
+import logging
 import random
 # tool
 import numpy as np
@@ -7,7 +8,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 # Custom
-from net import ParallelKINetworkV2 as Network
+from net import SemisupervisedParallelKINetworkV2 as Network
 from mri_tools import *
 from paired_dataset import *
 from utils import *
@@ -55,6 +56,12 @@ parser.add_argument('--mode', '-m', type=str, default='train',
                     help='whether training or test model, value should be set to train or test')
 parser.add_argument('--pretrained', '-pt', type=bool, default=False, help='whether load checkpoint')
 parser.add_argument('--resume', action='store_true', help='whether resume to train')
+# semi-supervised training
+parser.add_argument('--supervised-every', type=int, default=4,
+                    help='One supervised obj every how many unsupervised obj, to build a semi-supervised dataset')
+parser.add_argument('--semi-supervised', action='store_true', help='whether using dataset without GT in semi-dataset')
+parser.add_argument('--T-s', type=int, default=1)
+parser.add_argument('--T-us', type=int, default=1)
 
 
 def solvers(args):
@@ -94,15 +101,24 @@ def solvers(args):
         return
 
     # data
-    train_set, val_set = get_semisupervised_dataset_split(args, 'train', 4), get_dataset_split(args, 'val')
-    alt_sampler = AlternatingSampler(train_set, T_s=1, T_us=1)
-    train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, sampler=alt_sampler, pin_memory=True)
-    val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, shuffle=False, pin_memory=True)
+    semi_train_set, unsup_train_set, sup_train_set = get_semisupervised_dataset_split(args, 'train')
 
-    logger.info('The size of train dataset is {}.'.format(len(train_set)))
-    logger.info(f'Unsupervised:supervised: '
-                f'obj level: {len(train_set.unsupervised_volume_idx)}:{len(train_set.supervised_volume_idx)}, '
-                f'slice level: {len(train_set.unsupervised_idx)}:{len(train_set.supervised_idx)}.')
+    if args.semi_supervised:
+        train_set = semi_train_set
+        alt_sampler = AlternatingSampler(train_set, T_s=args.T_s, T_us=args.T_us)
+        train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, sampler=alt_sampler, pin_memory=True)
+        logger.info('Semi-supervised learning.')
+        logger.info(f'Unsupervised:supervised: '
+                    f'obj level: {len(train_set.unsupervised_volume_idx)}:{len(train_set.supervised_volume_idx)}, '
+                    f'slice level: {len(train_set.unsupervised_idx)}:{len(train_set.supervised_idx)}.')
+    else:
+        train_set = sup_train_set
+        train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, shuffle=True, pin_memory=True)
+        logger.info('Supervised learning.')
+        logger.info('The size of train dataset is {}.'.format(len(train_set)))
+
+    val_set = get_dataset_split(args, 'val')
+    val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, shuffle=False, pin_memory=True)
     logger.info('The size of val dataset is {}.'.format(len(val_set)))
 
     # training loop

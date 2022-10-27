@@ -205,21 +205,63 @@ class SemisupervisedConcatDataset(torch.utils.data.ConcatDataset):
         return self.unsupervised_idx
 
 
-def get_semisupervised_dataset_split(args, split, supervised_every):
-    volumes = get_paired_volume_datasets(
+class SemisupervisedConcatDatasetV2(torch.utils.data.ConcatDataset):
+    def __init__(self, unsupervised_datasets, supervised_datasets):
+        super(SemisupervisedConcatDatasetV2, self).__init__(
+            unsupervised_datasets +
+            supervised_datasets
+        )
+
+        nuv = len(unsupervised_datasets)  # num of unsupervised volumes
+        nus = np.sum([len(dataset) for dataset in unsupervised_datasets])  # num of unsupervised slices
+        nsv = len(supervised_datasets)  # num of supervised volumes
+        nss = np.sum([len(dataset) for dataset in supervised_datasets])  # num of supervised slices
+
+        unsupervised_volume_idx = list(np.arange(nuv))
+        unsupervised_slice_idx = list(np.arange(nus))
+        supervised_volume_idx = list(np.arange(nuv, nuv + nsv))
+        supervised_slice_idx = list(np.arange(nus, nus + nss))
+
+        self.supervised_idx = supervised_slice_idx
+        self.unsupervised_idx = unsupervised_slice_idx
+        self.supervised_volume_idx = supervised_volume_idx
+        self.unsupervised_volume_idx = unsupervised_volume_idx
+
+        # print('unsup volume idx', unsupervised_volume_idx)
+        # print('sup volume idx', supervised_volume_idx)
+        # print('unsup slice idx', self.unsupervised_idx)
+        # print('sup slice idx', self.supervised_idx)
+
+        assert len(np.intersect1d(self.supervised_idx, self.unsupervised_idx)) == 0
+        assert np.array_equal(np.sort(np.union1d(self.supervised_idx, self.unsupervised_idx)), np.arange(0, len(self)))
+
+    def get_supervised_idxs(self):
+        return self.supervised_idx
+
+    def get_unsupervised_idxs(self):
+        return self.unsupervised_idx
+
+
+def get_semisupervised_dataset_split(args, split):
+    volumes, unsupervised_volumes, supervised_volumes = get_paired_volume_datasets(
         getattr(args, split), crop=256, protocals=['T2'],
         object_limit=getattr(args, split+'_obj_limit'),
         u_mask_path=args.u_mask_path,
         s_mask_up_path=args.s_mask_up_path,
         s_mask_down_path=args.s_mask_down_path,
-        supervised_every=supervised_every)
+        supervised_every=args.supervised_every,
+        semi_split=True
+    )
 
-    slices = SemisupervisedConcatDataset(supervised_every, volumes)
-    # if args.prefetch:
-    #     # load all data to ram
-    #     slices = Prefetch(slices)
+    print(len(volumes))
+    print(len(unsupervised_volumes))
+    print(len(supervised_volumes))
 
-    return slices
+    semi_slices = SemisupervisedConcatDatasetV2(unsupervised_volumes, supervised_volumes)
+    unsup_slices = torch.utils.data.ConcatDataset(unsupervised_volumes) if len(unsupervised_volumes) > 0 else None
+    sup_slices = torch.utils.data.ConcatDataset(supervised_volumes) if len(supervised_volumes) > 0 else None
+
+    return semi_slices, unsup_slices, sup_slices
 
 
 

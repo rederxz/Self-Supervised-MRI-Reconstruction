@@ -135,13 +135,18 @@ class AlignedVolumesDataset(torch.utils.data.Dataset):
 
 
 def get_paired_volume_datasets(csv_path, protocals=None, crop=None, q=0, flatten_channels=False, object_limit=-1,
-                               u_mask_path=None, s_mask_up_path=None, s_mask_down_path=None, supervised_every=-1):
+                               u_mask_path=None, s_mask_up_path=None, s_mask_down_path=None, supervised_every=-1,
+                               semi_split=False):
     datasets = []
+    unsupervised_datasets = []
+    supervised_datasets = []
     num_object = 0
     for line in open(csv_path, 'r').readlines():
 
         unsupervised = True
         if supervised_every > 0 and (num_object + 1) % supervised_every == 0:
+            unsupervised = False
+        elif supervised_every == 0:
             unsupervised = False
 
         basepath = os.path.dirname(os.path.abspath(csv_path))
@@ -153,10 +158,17 @@ def get_paired_volume_datasets(csv_path, protocals=None, crop=None, q=0, flatten
                                         u_mask_path=u_mask_path, s_mask_up_path=s_mask_up_path,
                                         s_mask_down_path=s_mask_down_path, unsupervised=unsupervised)
         datasets.append(dataset)
+        if unsupervised:
+            unsupervised_datasets.append(dataset)
+        else:
+            supervised_datasets.append(dataset)
         num_object += 1
         if num_object == object_limit:
             break
-    return datasets  # torch.utils.data.ConcatDataset(datasets)
+    if semi_split:
+        return datasets, unsupervised_datasets, supervised_datasets
+    else:
+        return datasets  # torch.utils.data.ConcatDataset(datasets)
 
 
 class tiffPaired(torch.utils.data.Dataset):
