@@ -11,6 +11,7 @@ from net import ParallelKINetworkV2 as Network
 from mri_tools import *
 from paired_dataset import *
 from utils import *
+from sampler import *
 
 os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
@@ -77,6 +78,7 @@ def solvers(args):
         test_set = get_dataset_split(args, 'test')
         test_loader = DataLoader(dataset=test_set, batch_size=args.batch_size, shuffle=False, pin_memory=True)
         logger.info('The size of test dataset is {}.'.format(len(test_set)))
+        test_loader = tqdm(test_loader, desc='testing', total=int(len(test_loader)))
 
         # run one epoch
         test_log = model.test_one_epoch(test_loader)
@@ -92,11 +94,15 @@ def solvers(args):
         return
 
     # data
-    train_set, val_set = get_dataset_split(args, 'train'), get_dataset_split(args, 'val')
-    train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, shuffle=True, pin_memory=True)
+    train_set, val_set = get_semisupervised_dataset_split(args, 'train', 4), get_dataset_split(args, 'val')
+    alt_sampler = AlternatingSampler(train_set, T_s=1, T_us=1)
+    train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, sampler=alt_sampler, pin_memory=True)
     val_loader = DataLoader(dataset=val_set, batch_size=args.batch_size, shuffle=False, pin_memory=True)
 
     logger.info('The size of train dataset is {}.'.format(len(train_set)))
+    logger.info(f'Unsupervised:supervised: '
+                f'obj level: {len(train_set.unsupervised_volume_idx)}:{len(train_set.supervised_volume_idx)}, '
+                f'slice level: {len(train_set.unsupervised_idx)}:{len(train_set.supervised_idx)}.')
     logger.info('The size of val dataset is {}.'.format(len(val_set)))
 
     # training loop

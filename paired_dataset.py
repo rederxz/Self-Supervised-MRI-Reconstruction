@@ -94,7 +94,7 @@ class DummyVolumeDataset(torch.utils.data.Dataset):
 class AlignedVolumesDataset(torch.utils.data.Dataset):
     def __init__(self, *volumes, protocals, \
                  crop=None, q=0, flatten_channels=False,
-                 u_mask_path=None, s_mask_up_path=None, s_mask_down_path=None):
+                 u_mask_path=None, s_mask_up_path=None, s_mask_down_path=None, unsupervised=False):
         super().__init__()
         volumes = [VolumeDataset(x, \
                                  crop, q=q, flatten_channels=flatten_channels) for x in volumes]
@@ -122,20 +122,28 @@ class AlignedVolumesDataset(torch.utils.data.Dataset):
         self.mask_net_down = np.stack((self.mask_net_down, self.mask_net_down), axis=-1)
         self.mask_net_down = torch.from_numpy(self.mask_net_down).float()
 
+        self.unsupervised = unsupervised
+
     def __len__(self):
         return len(self.volumes[0])
 
     def __getitem__(self, index):
         images = [volume[index] for volume in self.volumes]
         masks = [self.mask_under, self.mask_net_up, self.mask_net_down]
-        return images + masks
+        meta_data = [{'_is_unsupervised': self.unsupervised}]
+        return images + masks + meta_data
 
 
 def get_paired_volume_datasets(csv_path, protocals=None, crop=None, q=0, flatten_channels=False, object_limit=-1,
-                               u_mask_path=None, s_mask_up_path=None, s_mask_down_path=None):
+                               u_mask_path=None, s_mask_up_path=None, s_mask_down_path=None, supervised_every=-1):
     datasets = []
     num_object = 0
     for line in open(csv_path, 'r').readlines():
+
+        unsupervised = True
+        if supervised_every > 0 and (num_object + 1) % supervised_every == 0:
+            unsupervised = False
+
         basepath = os.path.dirname(os.path.abspath(csv_path))
         dataset = [os.path.join(basepath, filepath) \
                    for filepath in line.strip().split(',')]
@@ -143,7 +151,7 @@ def get_paired_volume_datasets(csv_path, protocals=None, crop=None, q=0, flatten
                                         protocals=protocals, crop=crop, q=q, \
                                         flatten_channels=flatten_channels,
                                         u_mask_path=u_mask_path, s_mask_up_path=s_mask_up_path,
-                                        s_mask_down_path=s_mask_down_path)
+                                        s_mask_down_path=s_mask_down_path, unsupervised=unsupervised)
         datasets.append(dataset)
         num_object += 1
         if num_object == object_limit:

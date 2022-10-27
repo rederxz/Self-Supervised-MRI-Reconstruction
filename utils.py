@@ -2,6 +2,7 @@ import torch
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 import logging
 from tqdm import tqdm
+import numpy as np
 from paired_dataset import get_paired_volume_datasets
 
 
@@ -158,3 +159,71 @@ def get_dataset_split(args, split):
         slices = Prefetch(slices)
 
     return slices
+
+
+class SemisupervisedConcatDataset(torch.utils.data.ConcatDataset):
+    def __init__(self, supervised_every, datasets):
+        """
+        supervised_every: one supervised volume every how many unsupervised volumes
+            like supervised_every == 3, then 1 sup / 3 unsup
+        """
+        super(SemisupervisedConcatDataset, self).__init__(datasets)
+
+        supervised_idx = list()
+        supervised_volume_idx = list()
+        unsupervised_idx = list()
+        unsupervised_volume_idx = list()
+        cur_start_idx = 0
+        for i, dataset in enumerate(datasets):
+            cur_end_idx = cur_start_idx + len(dataset)
+            if (i+1) % supervised_every == 0:
+                supervised_idx += list(range(cur_start_idx, cur_end_idx))
+                supervised_volume_idx.append(i)
+            else:
+                unsupervised_idx += list(range(cur_start_idx, cur_end_idx))
+                unsupervised_volume_idx.append(i)
+            cur_start_idx += len(dataset)
+
+        self.supervised_idx = supervised_idx
+        self.unsupervised_idx = unsupervised_idx
+        self.supervised_volume_idx = supervised_volume_idx
+        self.unsupervised_volume_idx = unsupervised_volume_idx
+
+        # print('sup volume idx', supervised_volume_idx)
+        # print('unsup volume idx', unsupervised_volume_idx)
+        # print('sup slice idx', self.supervised_idx)
+        # print('unsup slice idx', self.unsupervised_idx)
+
+        assert len(np.intersect1d(self.supervised_idx, self.unsupervised_idx)) == 0
+        assert np.array_equal(np.sort(np.union1d(self.supervised_idx, self.unsupervised_idx)), np.arange(0, len(self)))
+
+
+    def get_supervised_idxs(self):
+        return self.supervised_idx
+
+    def get_unsupervised_idxs(self):
+        return self.unsupervised_idx
+
+
+def get_semisupervised_dataset_split(args, split, supervised_every):
+    volumes = get_paired_volume_datasets(
+        getattr(args, split), crop=256, protocals=['T2'],
+        object_limit=getattr(args, split+'_obj_limit'),
+        u_mask_path=args.u_mask_path,
+        s_mask_up_path=args.s_mask_up_path,
+        s_mask_down_path=args.s_mask_down_path,
+        supervised_every=supervised_every)
+
+    slices = SemisupervisedConcatDataset(supervised_every, volumes)
+    # if args.prefetch:
+    #     # load all data to ram
+    #     slices = Prefetch(slices)
+
+    return slices
+
+
+
+
+
+
+
