@@ -308,3 +308,78 @@ class SemisupervisedParallelKINetworkV2(ParallelKINetworkV2):
         log['time'] = tok - tik
 
         return log
+
+
+class COSemisupervisedParallelKINetworkV2(ParallelKINetworkV2):
+    """
+    Dual Domain Consistency Semisupervised...
+    """
+    def run_one_epoch(self, mode, dataloader):
+
+        assert mode in ['train', 'val', 'test']
+
+        tik = time.time()
+
+        loss, psnr_1, psnr_2, ssim_1, ssim_2 = 0.0, 0.0, 0.0, 0., 0.
+
+        for iter_num, data_batch in enumerate(dataloader):
+
+            label = data_batch[0].to(self.rank, non_blocking=True)  # full sampled image [bs, 1, x, y]
+            label = torch.view_as_real(label[:, 0]).permute(0, 3, 1, 2).contiguous()  # full sampled image [bs, 2, x, y]
+            mask_under = data_batch[1].to(self.rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
+            mask_net_up = data_batch[2].to(self.rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
+            mask_net_down = data_batch[3].to(self.rank, non_blocking=True).permute(0, 3, 1, 2).contiguous()
+
+            if mode == 'train':
+                # for supervised samples,
+                # we should set mask_net_up and mask_net_down to mask_omega, for input and DC
+                # and set mask_omega all 1, for loss calculation
+                _is_unsupervised = data_batch[4]['_is_unsupervised']  # [bs, ]
+                supervised_idx = torch.logical_not(_is_unsupervised).nonzero()
+                mask_net_up[supervised_idx] = mask_net_down[supervised_idx] = mask_under[supervised_idx]
+                mask_under[supervised_idx] = torch.ones_like(mask_under[supervised_idx])
+                # for unsupervised samples,
+                # we should set mask_net_up and mask_net_down to mask_omega, for input and DC
+                # and set mask_omega to all 0, for loss calculation that only considers consistency between two branches
+                # so this is called "consistency only"
+                unsupervised_idx = _is_unsupervised.nonzero()
+                mask_net_up[unsupervised_idx] = mask_net_down[unsupervised_idx] = mask_under[unsupervised_idx]
+                mask_under[unsupervised_idx] = torch.zeros_like(mask_under[unsupervised_idx])
+            elif mode == 'test' or mode == 'val':
+                mask_net_up = mask_net_down = mask_under
+
+            self.set_input_image_with_masks(label, mask_under, mask_net_up, mask_net_down)
+
+            if mode == 'train':
+                output_i_1, output_i_2, batch_loss = self.update()
+            else:
+                output_i_1, output_i_2, batch_loss, _psnr_1, _psnr_2, _ssim_1, _ssim_2 = self.test()
+                psnr_1 += _psnr_1
+                psnr_2 += _psnr_2
+                ssim_1 += _ssim_1
+                ssim_2 += _ssim_2
+
+            loss += batch_loss.item()
+
+        loss /= len(dataloader)
+
+        log = dict()
+        log['epoch'] = self.epoch
+        log['loss'] = loss
+        if mode == 'train':
+            log['lr'] = self.optimizer.param_groups[0]['lr']
+        else:
+            psnr_1 /= len(dataloader)
+            ssim_1 /= len(dataloader)
+            psnr_2 /= len(dataloader)
+            ssim_2 /= len(dataloader)
+            log['psnr1'] = psnr_1
+            log['psnr2'] = psnr_2
+            log['ssim1'] = ssim_1
+            log['ssim2'] = ssim_2
+
+        tok = time.time()
+
+        log['time'] = tok - tik
+
+        return log
