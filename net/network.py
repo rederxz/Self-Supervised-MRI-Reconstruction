@@ -4,6 +4,8 @@ import time
 import torch
 from torch import nn
 
+import matplotlib.pyplot as plt
+
 from mri_tools import *
 from utils import *
 from models import *
@@ -44,6 +46,8 @@ class ParallelKINetworkV2(nn.Module):
         self.scheduler_re = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=self.optimizer, mode='max', factor=0.3,
                                                                        patience=20)
         self.early_stopping = EarlyStopping(patience=50, delta=1e-5)
+
+        self.save_test_vis = False
 
     def set_input_image_with_masks(self, img_full, mask_omega, mask_subset1, mask_subset2):
         """
@@ -103,14 +107,28 @@ class ParallelKINetworkV2(nn.Module):
 
         # get magnitude images
         img_full = torch.abs(torch.view_as_complex(self.img_full.permute(0, 2, 3, 1).contiguous()))
+        img_omega = torch.abs(torch.view_as_complex(self.img_omega.permute(0, 2, 3, 1).contiguous()))
         output_i_1 = torch.abs(torch.view_as_complex(output_i_1.permute(0, 2, 3, 1).contiguous()))
         output_i_2 = torch.abs(torch.view_as_complex(output_i_2.permute(0, 2, 3, 1).contiguous()))
+
+        img_diff_2 = output_i_2 - img_full
 
         # calculate metrics
         psnr_1 = psnr_slice(img_full, output_i_1)
         ssim_1 = ssim_slice(img_full, output_i_1)
         psnr_2 = psnr_slice(img_full, output_i_2)
         ssim_2 = ssim_slice(img_full, output_i_2)
+
+        if self.save_test_vis:
+            if not hasattr(self, 'cnt'):
+                self.cnt = 0
+            else:
+                self.cnt += 1
+            plt.imsave(os.path.join(self.args.output_path, f'img_full_{self.cnt}.png'), img_full.cpu()[0], cmap='gray')
+            plt.imsave(os.path.join(self.args.output_path, f'img_omega_{self.cnt}.png'), img_omega.cpu()[0], cmap='gray')
+            plt.imsave(os.path.join(self.args.output_path, f'img_output1_{self.cnt}.png'), output_i_1.cpu()[0], cmap='gray')
+            plt.imsave(os.path.join(self.args.output_path, f'img_output2_{self.cnt}.png'), output_i_2.cpu()[0], cmap='gray')
+            plt.imsave(os.path.join(self.args.output_path, f'img_diff2_{self.cnt}.png'), img_diff_2.cpu()[0], cmap='bwr', vmin=-0.3, vmax=0.3)
 
         return output_i_1, output_i_2, loss, psnr_1, psnr_2, ssim_1, ssim_2
 
