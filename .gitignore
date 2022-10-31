@@ -4,3 +4,7 @@ runs
 IXI_T1
 *.err
 *.out
+*every*
+*run*/
+*semi*/
+*sup*/
