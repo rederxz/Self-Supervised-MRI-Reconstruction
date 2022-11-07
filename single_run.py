@@ -50,7 +50,7 @@ parser.add_argument('--val-obj-limit', type=int, default=5, help='number of obje
 parser.add_argument('--test-obj-limit', type=int, default=20, help='number of objects in test set')
 parser.add_argument('--prefetch', action='store_false')
 # save path
-parser.add_argument('--output-path', type=str, default='./run/', help='output path')
+parser.add_argument('--output-path', type=str, default='./runs/test_run/', help='output path')
 # others
 parser.add_argument('--mode', '-m', type=str, default='train',
                     help='whether training or test model, value should be set to train or test')
@@ -58,8 +58,9 @@ parser.add_argument('--pretrained', '-pt', type=bool, default=False, help='wheth
 parser.add_argument('--resume', action='store_true', help='whether resume to train')
 # semi-supervised training
 parser.add_argument('--supervised-every', type=int, default=4,
-                    help='One supervised obj every how many unsupervised obj, to build a semi-supervised dataset')
-parser.add_argument('--semi-supervised', action='store_true', help='whether using dataset without GT in semi-dataset')
+                    help='One supervised subject every how many subjects, to build a semi-supervised dataset')
+parser.add_argument('--supervised-mode', metavar='type', choices=['semi-supervised', 'supervised', 'self-supervised'],
+                    required=True, type=str, help='types of learning')
 parser.add_argument('--T-s', type=int, default=1)
 parser.add_argument('--T-us', type=int, default=1)
 
@@ -67,6 +68,8 @@ parser.add_argument('--T-us', type=int, default=1)
 def solvers(args):
     # logger and devices
     logger = create_logger(args)
+
+    logger.info(args)
 
     # model
     model = Network(0, args)  # 0 is rank
@@ -103,7 +106,9 @@ def solvers(args):
     # data
     semi_train_set, unsup_train_set, sup_train_set = get_semisupervised_dataset_split(args, 'train')
 
-    if args.semi_supervised:
+    if args.supervised_mode == 'semi-supervised':  # jointly use unsup and sup data
+        assert unsup_train_set is not None and sup_train_set is not None and \
+               len(unsup_train_set) > 0 and len(sup_train_set) > 0
         train_set = semi_train_set
         alt_sampler = AlternatingSampler(train_set, T_s=args.T_s, T_us=args.T_us)
         train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, sampler=alt_sampler, pin_memory=True)
@@ -111,10 +116,17 @@ def solvers(args):
         logger.info(f'Unsupervised:supervised: '
                     f'obj level: {len(train_set.unsupervised_volume_idx)}:{len(train_set.supervised_volume_idx)}, '
                     f'slice level: {len(train_set.unsupervised_idx)}:{len(train_set.supervised_idx)}.')
-    else:
+    elif args.supervised_mode == 'supervised':  # only use sup data
+        assert sup_train_set is not None and len(sup_train_set) > 0
         train_set = sup_train_set
         train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, shuffle=True, pin_memory=True)
         logger.info('Supervised learning.')
+        logger.info('The size of train dataset is {}.'.format(len(train_set)))
+    elif args.supervised_mode == 'self-supervised':  # only use unsup data
+        assert unsup_train_set is not None and len(unsup_train_set) > 0
+        train_set = unsup_train_set
+        train_loader = DataLoader(dataset=train_set, batch_size=args.batch_size, shuffle=True, pin_memory=True)
+        logger.info('Self-supervised learning.')
         logger.info('The size of train dataset is {}.'.format(len(train_set)))
 
     val_set = get_dataset_split(args, 'val')

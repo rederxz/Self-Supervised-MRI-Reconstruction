@@ -253,9 +253,9 @@ def get_semisupervised_dataset_split(args, split):
         semi_split=True
     )
 
-    print(len(volumes))
-    print(len(unsupervised_volumes))
-    print(len(supervised_volumes))
+    print(f'Total subjects: {len(volumes)}')
+    print(f'Unsup subjects: {len(unsupervised_volumes)}')
+    print(f'Sup subjects: {len(supervised_volumes)}')
 
     semi_slices = SemisupervisedConcatDatasetV2(unsupervised_volumes, supervised_volumes)
     unsup_slices = torch.utils.data.ConcatDataset(unsupervised_volumes) if len(unsupervised_volumes) > 0 else None
