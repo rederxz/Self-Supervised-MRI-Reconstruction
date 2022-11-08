@@ -60,7 +60,7 @@ parser.add_argument('--resume', action='store_true', help='whether resume to tra
 parser.add_argument('--supervised-every', type=int, default=4,
                     help='One supervised subject every how many subjects, to build a semi-supervised dataset')
 parser.add_argument('--supervised-mode', metavar='type', choices=['semi-supervised', 'supervised', 'self-supervised'],
-                    required=True, type=str, help='types of learning')
+                    type=str, default='supervised', help='types of learning')
 parser.add_argument('--T-s', type=int, default=1)
 parser.add_argument('--T-us', type=int, default=1)
 
