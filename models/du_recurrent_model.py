@@ -460,3 +460,130 @@ class OriginalRecurrentModel(nn.Module):
     #
     #     self.forward()
     #     self.update_G()
+
+
+class HybridRecurrentModel(nn.Module):
+    def __init__(self, opts):
+        super(HybridRecurrentModel, self).__init__()
+
+        self.networks = []
+
+        self.n_recurrent = opts.n_recurrent
+
+        self.net_G_I = get_generator(opts.net_G, opts)
+        self.net_G_K = get_generator(opts.net_G, opts)
+        self.networks.append(self.net_G_I)  # 实际上, self.networks仅用于初始化权重
+        self.networks.append(self.net_G_K)
+
+        self.criterion = nn.L1Loss()
+
+        self.opts = opts
+
+        # data consistency layers in image space & k-space
+        dcs_I = []
+        for i in range(self.n_recurrent):
+            dcs_I.append(DataConsistencyInKspace_I(noise_lvl=None))
+        self.dcs_I = dcs_I
+
+        dcs_K = []
+        for i in range(self.n_recurrent):
+            dcs_K.append(DataConsistencyInKspace_K(noise_lvl=None))
+        self.dcs_K = dcs_K
+
+    def setgpu(self, gpu_ids):
+        self.device = torch.device('cuda:{}'.format(gpu_ids[0]))
+
+    def initialize(self):
+        [net.apply(gaussian_weights_init) for net in self.networks]
+
+    def dual_space_forward(self, i_input, k_input, mask_input, k_omega, mask_omega):
+        I = i_input
+        I.requires_grad_(False)
+
+        net = {}
+        for i in range(1, self.n_recurrent + 1):  # TODO: only half iters, to keep computation the save?
+            '''Image Space'''
+            x_I = I
+
+            net['r%d_img_pred' % i] = self.net_G_I(x_I)  # output recon image
+            net['r%d_img_dc_pred' % i], _ = self.dcs_I[i - 1](net['r%d_img_pred' % i], k_input, mask_input)
+
+            '''K Space'''
+            net['r%d_kspc_img_dc_pred' % i] = fft2_tensor(net['r%d_img_dc_pred' % i])  # output data consistency image's kspace
+
+            x_K = net['r%d_kspc_img_dc_pred' % i]
+
+            net['r%d_kspc_pred' % i] = self.net_G_K(x_K)  # output recon kspace
+            I, _ = self.dcs_K[i - 1](net['r%d_kspc_pred' % i], k_input, mask_input)  # output data consistency images
+
+        # Image domain loss
+        loss_img_dc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_img_dc = loss_img_dc + self.criterion(fft2_tensor(net['r%d_img_pred' % j]) * mask_omega, k_omega)  # TODO: loss before DC, because in k-space
+
+        # Kspace domain loss
+        loss_kspc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_kspc = loss_kspc + self.criterion(net['r%d_kspc_pred' % j] * mask_omega, k_omega)
+
+        loss_total = loss_img_dc + loss_kspc
+
+        return I, loss_total
+
+    def k_space_forward(self, i_input, k_input, mask_input, k_omega, mask_omega):
+        x_K = k_input
+        x_K.requires_grad_(False)
+        I = None
+
+        net = {}
+        for i in range(1, self.n_recurrent + 1):
+            '''K Space'''
+            net['r%d_kspc_pred' % i] = self.net_G_K(x_K)  # output recon kspace
+            I, x_K = self.dcs_K[i - 1](net['r%d_kspc_pred' % i], k_input, mask_input)  # data consistency
+
+        # Kspace domain loss
+        loss_kspc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_kspc = loss_kspc + self.criterion(net['r%d_kspc_pred' % j] * mask_omega, k_omega)
+
+        loss_total = loss_kspc
+
+        return I, loss_total
+
+    def image_space_forward(self, i_input, k_input, mask_input, k_omega, mask_omega):
+        I = i_input
+        I.requires_grad_(False)
+
+        net = {}
+        for i in range(1, self.n_recurrent + 1):
+            '''Image Space'''
+            x_I = I
+
+            net['r%d_img_pred' % i] = self.net_G_I(x_I)  # output recon image
+            net['r%d_img_dc_pred' % i], _ = self.dcs_I[i - 1](net['r%d_img_pred' % i], k_input, mask_input)
+
+            I = net['r%d_img_dc_pred' % i]
+
+        # Image domain loss
+        loss_img_dc = 0
+        for j in range(1, self.n_recurrent + 1):
+            loss_img_dc = loss_img_dc + self.criterion(fft2_tensor(net['r%d_img_pred' % j]) * mask_omega, k_omega)  # TODO: loss before DC, because in k-space
+
+        loss_total = loss_img_dc
+
+        return I, loss_total
+
+    def hybrid_forward(self, i_input, k_input, mask_input, k_omega, mask_omega):
+        recon_i_only_k, loss_only_k = self.k_space_forward(i_input, k_input, mask_input, k_omega, mask_omega)
+        recon_i_only_i, loss_only_i = self.image_space_forward(i_input, k_input, mask_input, k_omega, mask_omega)
+        recon_i_dual_space, loss_dual_space = self.dual_space_forward(i_input, k_input, mask_input, k_omega, mask_omega)
+
+        # diff with k_omega, within mask_omega
+        loss_omega = loss_only_i + loss_only_k + loss_dual_space
+
+        # dual domain consistency, outside mask_omega
+        diff_i2d = (fft2_tensor(recon_i_only_i) - fft2_tensor(recon_i_dual_space)) * (1 - mask_omega)  # kspace recon to dualspace recon
+        diff_k2d = (fft2_tensor(recon_i_only_k) - fft2_tensor(recon_i_dual_space)) * (1 - mask_omega)  # imagespace recon to dualspace recon
+        loss_ddc = self.criterion(diff_i2d, torch.zeros_like(diff_i2d)) + self.criterion(diff_k2d, torch.zeros_like(diff_k2d))
+
+        return recon_i_dual_space, loss_omega, loss_ddc

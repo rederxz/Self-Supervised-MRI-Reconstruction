@@ -27,19 +27,24 @@ class BaseModel(nn.Module):
         self.model_path = os.path.join(self.args.model_save_path, 'checkpoint.pth.tar')
         self.best_model_path = os.path.join(self.args.model_save_path, 'best_checkpoint.pth.tar')
 
-        # callbacks
-        self.signal_to_stop = False
-        self.scheduler_wu = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optimizer, lr_lambda=lambda
-            epoch: epoch / args.warmup_epochs if epoch <= args.warmup_epochs else 1)
-        self.scheduler_re = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=self.optimizer, mode='max', factor=0.3,
-                                                                       patience=20)
-        self.early_stopping = EarlyStopping(patience=50, delta=1e-5)
+        self.build()
+
+        self.attach_callbacks()
 
         self.save_test_vis = False
 
     def build(self):
         """model, optimizer, criterion"""
         raise NotImplementedError
+
+    def attach_callbacks(self):
+        # callbacks
+        self.signal_to_stop = False
+        self.scheduler_wu = torch.optim.lr_scheduler.LambdaLR(optimizer=self.optimizer, lr_lambda=lambda
+            epoch: epoch / self.args.warmup_epochs if epoch <= self.args.warmup_epochs else 1)
+        self.scheduler_re = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=self.optimizer, mode='max', factor=0.3,
+                                                                       patience=20)
+        self.early_stopping = EarlyStopping(patience=50, delta=1e-5)
 
     def set_input(self, mode, batch_data):
         """
@@ -51,12 +56,23 @@ class BaseModel(nn.Module):
         """model forward and compute loss"""
         raise NotImplementedError
 
+    def train_forward(self):
+        """model forward when training"""
+        raise NotImplementedError
+
     def update(self):
         """model forward, compute loss and model backward"""
         raise NotImplementedError
 
     def test(self):
         """model forward, compute loss, calculate metrics (and output viz)"""
+        raise NotImplementedError
+
+    def inference(self):
+        """model inference, compute loss (save some necessary calculations)"""
+        raise NotImplementedError
+
+    def post_evaluation(self):
         raise NotImplementedError
 
     def run_one_epoch(self, mode, dataloader):
