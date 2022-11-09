@@ -297,3 +297,75 @@ class SemisupervisedParallelKINetworkV4(SemisupervisedParallelKINetworkV3):
         loss = loss_omega
 
         return output_i_1, output_i_2, loss
+
+
+class SemisupervisedParallelKINetworkV5(SemisupervisedParallelKINetworkV3):
+    """
+    Compared to V4,
+    (1) Remove dual-domain consistency, thus no hybrid-forward conducted.
+    """
+    def build(self):
+        hybrid_model = du_recurrent_model.HybridRecurrentModel(self.args)
+        hybrid_model.initialize()
+        self.network_up = hybrid_model
+        self.network_down = hybrid_model
+
+        self.optimizer = torch.optim.Adam(hybrid_model.parameters(),
+                                          lr=self.args.lr)
+
+        self.criterion = nn.L1Loss()  # TODO: here we use L1loss
+
+    def sup_train_forward(self):
+        """train_forward for sup samples"""
+        output_sup, loss_sup = self.network_down.dual_space_forward(
+            self.img_omega[self.supervised_idx],
+            self.k_omega[self.supervised_idx],
+            self.mask_omega[self.supervised_idx],
+            self.k_full[self.supervised_idx],
+            torch.ones_like(self.k_full[self.supervised_idx])
+        )
+
+        return loss_sup
+
+    def unsup_train_forward(self):
+        """train_forward for unsup samples"""
+        # for unsup samples
+        output_up, loss_omega_up = self.network_up.dual_space_forward(
+            self.img_subset1[self.unsupervised_idx],
+            self.k_subset1[self.unsupervised_idx],
+            self.mask_subset1[self.unsupervised_idx],
+            self.k_omega[self.unsupervised_idx],
+            self.mask_omega[self.unsupervised_idx]
+        )
+        output_down, loss_omega_down = self.network_down.dual_space_forward(
+            self.img_subset2[self.unsupervised_idx],
+            self.k_subset2[self.unsupervised_idx],
+            self.mask_subset2[self.unsupervised_idx],
+            self.k_omega[self.unsupervised_idx],
+            self.mask_omega[self.unsupervised_idx]
+        )
+
+        # omega loss
+        loss_omega = loss_omega_up + loss_omega_down
+
+        # dual-input loss, outside mask_omega
+        diff = (fft2_tensor(output_up) - fft2_tensor(output_down)) * (1 - self.mask_omega[self.unsupervised_idx])
+        loss_di = self.criterion(diff, torch.zeros_like(diff))
+
+        loss_unsup = loss_omega + 0.01 * loss_di
+
+        return loss_unsup
+
+    def inference(self):
+        output_i, loss_omega = self.network_down.dual_space_forward(
+            self.img_omega,
+            self.k_omega,
+            self.mask_omega,
+            self.k_full,
+            torch.ones_like(self.mask_omega)
+        )
+
+        output_i_1 = output_i_2 = output_i
+        loss = loss_omega
+
+        return output_i_1, output_i_2, loss
